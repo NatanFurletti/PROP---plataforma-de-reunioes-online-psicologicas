@@ -1,0 +1,50 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Psychologist {
+  id        String    @id @default(uuid())
+  name      String
+  email     String    @unique
+  passwordHash String
+  crp       String?   // Registro no Conselho Regional de Psicologia
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  sessions  Session[]
+
+  @@map("psychologists")
+}
+
+model Session {
+  id              String    @id @default(uuid())
+  psychologistId  String
+  psychologist    Psychologist @relation(fields: [psychologistId], references: [id], onDelete: Cascade)
+  scheduledAt     DateTime
+  durationMinutes Int       @default(50)
+  status          SessionStatus @default(SCHEDULED)
+  accessToken     String    @unique  // token do paciente para entrar
+  startedAt       DateTime?
+  endedAt         DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([psychologistId])
+  @@index([accessToken])
+  @@index([status])
+  @@map("sessions")
+}
+
+enum SessionStatus {
+  SCHEDULED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
