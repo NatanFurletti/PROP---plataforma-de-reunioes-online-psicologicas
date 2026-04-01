@@ -6,6 +6,7 @@ import {
   loginSchema,
   createSessionSchema,
 } from "../services/index";
+import { AppError } from "../utils/AppError";
 
 export const registerPsychologist = async (
   req: Request,
@@ -36,7 +37,7 @@ export const loginPsychologist = async (
     res.cookie("jwt", token, {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
-      sameSite: "lax",
+      sameSite: "strict",
       maxAge: 8 * 60 * 60 * 1000, // 8 hours
     });
 
@@ -52,7 +53,7 @@ export const logoutPsychologist = async (
   next: NextFunction,
 ) => {
   try {
-    res.cookie("jwt", "", { maxAge: 0 });
+    res.cookie("jwt", "", { httpOnly: true, maxAge: 0 });
     res.json({ message: "Logged out successfully" });
   } catch (error) {
     next(error);
@@ -108,10 +109,15 @@ export const getSession = async (
 ) => {
   try {
     const { id } = req.params;
+    const psychologistId = (req as any).user?.id;
     const session = await SessionService.getSessionById(id);
 
     if (!session) {
       return res.status(404).json({ error: "Session not found" });
+    }
+
+    if (session.psychologistId !== psychologistId) {
+      return next(new AppError("Forbidden", 403));
     }
 
     res.json(session);
@@ -145,8 +151,13 @@ export const validateSessionToken = async (
     const { token } = req.params;
     const session = await SessionService.validateAccessToken(token);
 
-    res.json({ valid: true, sessionId: session.id });
+    res.json({
+      sessionId: session.id,
+      scheduledAt: session.scheduledAt,
+      durationMinutes: session.durationMinutes,
+      psychologistName: (session as any).psychologist?.name ?? "",
+    });
   } catch (error) {
-    res.status(401).json({ valid: false, error: "Invalid token" });
+    next(error);
   }
 };
