@@ -1,7 +1,8 @@
-import { PrismaClient, Psychologist } from "@prisma/client";
+import { PrismaClient } from "@prisma/client";
 import bcryptjs from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { z } from "zod";
+import { AppError } from "../utils/AppError";
 
 const prisma = new PrismaClient();
 const JWT_SECRET = process.env.JWT_SECRET || "secret-key";
@@ -34,7 +35,7 @@ export class AuthService {
     });
 
     if (existingPsychologist) {
-      throw new Error("Email already in use");
+      throw new AppError("Email already in use", 409);
     }
 
     const passwordHash = await bcryptjs.hash(data.password, 10);
@@ -61,7 +62,7 @@ export class AuthService {
     });
 
     if (!psychologist) {
-      throw new Error("Invalid credentials");
+      throw new AppError("Invalid credentials", 401);
     }
 
     const passwordMatch = await bcryptjs.compare(
@@ -70,7 +71,7 @@ export class AuthService {
     );
 
     if (!passwordMatch) {
-      throw new Error("Invalid credentials");
+      throw new AppError("Invalid credentials", 401);
     }
 
     const token = jwt.sign(
@@ -109,11 +110,11 @@ export class SessionService {
     data: z.infer<typeof createSessionSchema>,
     psychologistId: string,
   ) {
-    const accessToken = jwt.sign(
-      { sessionId: crypto.randomUUID() },
-      JWT_SECRET,
-      { expiresIn: "7d" },
-    );
+    if (new Date(data.scheduledAt) < new Date()) {
+      throw new AppError("scheduledAt must be in the future", 400);
+    }
+
+    const accessToken = crypto.randomUUID();
 
     const session = await prisma.session.create({
       data: {
@@ -158,14 +159,22 @@ export class SessionService {
   static async validateAccessToken(token: string) {
     const session = await prisma.session.findUnique({
       where: { accessToken: token },
+      include: { psychologist: true },
     });
 
     if (!session) {
-      throw new Error("Invalid access token");
+      throw new AppError("Invalid access token", 404);
     }
 
-    if (session.status !== "SCHEDULED") {
-      throw new Error("Session is not available");
+    if (session.status === "CANCELLED" || session.status === "COMPLETED") {
+      throw new AppError("Session no longer available", 410);
+    }
+
+    // Verificar expiração: scheduledAt + durationMinutes + 30min
+    const expiresAt = new Date(session.scheduledAt);
+    expiresAt.setMinutes(expiresAt.getMinutes() + session.durationMinutes + 30);
+    if (new Date() > expiresAt) {
+      throw new AppError("Session no longer available", 410);
     }
 
     return session;
