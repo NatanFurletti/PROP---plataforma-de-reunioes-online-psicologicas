@@ -13,3 +13,4 @@ coverage/
 out/
 .cache/
 prisma/.env
+.claude/settings.local.json
