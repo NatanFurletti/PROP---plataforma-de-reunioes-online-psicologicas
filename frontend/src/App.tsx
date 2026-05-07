@@ -1,6 +1,7 @@
-import React from "react";
+import React, { useEffect } from "react";
 import { BrowserRouter as Router, Routes, Route, Navigate } from "react-router-dom";
 import { useAuthStore } from "./contexts/useSessionStore";
+import { authService } from "./services/api";
 import { Login } from "./pages/Login";
 import { Register } from "./pages/Register";
 import { Dashboard } from "./pages/Dashboard";
@@ -9,11 +10,47 @@ import { JoinSession } from "./pages/JoinSession";
 import { SessionEnded } from "./pages/SessionEnded";
 
 const PrivateRoute = ({ children }: { children: React.ReactNode }) => {
-  const { isAuthenticated } = useAuthStore();
-  return isAuthenticated ? <>{children}</> : <Navigate to="/login" />;
+  const { isAuthenticated, bootstrapped } = useAuthStore();
+  if (!bootstrapped) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+        <div className="w-10 h-10 border-4 border-blue-500 border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
+  return isAuthenticated ? <>{children}</> : <Navigate to="/login" replace />;
 };
 
 export function App() {
+  const { login, logout, setBootstrapped } = useAuthStore();
+
+  // Bootstrap: tenta restaurar sessão a partir do cookie HTTP-only
+  useEffect(() => {
+    let cancelled = false;
+    authService
+      .me()
+      .then((res) => {
+        if (cancelled) return;
+        login(res.data.psychologist);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        // Sem sessão válida — segue como anônimo
+      })
+      .finally(() => {
+        if (cancelled) return;
+        setBootstrapped(true);
+      });
+
+    const onUnauthorized = () => logout();
+    window.addEventListener("auth:unauthorized", onUnauthorized);
+
+    return () => {
+      cancelled = true;
+      window.removeEventListener("auth:unauthorized", onUnauthorized);
+    };
+  }, [login, logout, setBootstrapped]);
+
   return (
     <Router>
       <Routes>

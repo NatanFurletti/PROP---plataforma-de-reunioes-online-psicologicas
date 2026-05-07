@@ -16,6 +16,8 @@ model Psychologist {
   email     String    @unique
   passwordHash String
   crp       String?   // Registro no Conselho Regional de Psicologia
+  // Incrementado a cada logout / troca de senha. JWTs com versão antiga ficam inválidos.
+  tokenVersion Int    @default(0)
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
   sessions  Session[]

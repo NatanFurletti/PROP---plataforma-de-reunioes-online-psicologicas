@@ -1,7 +1,7 @@
 import { Request, Response, NextFunction } from "express";
 import { AuthService } from "../services/index";
 
-export const authenticateToken = (
+export const authenticateToken = async (
   req: Request,
   res: Response,
   next: NextFunction,
@@ -24,11 +24,11 @@ export const authenticateToken = (
         .json({ error: "No authentication token provided" });
     }
 
-    const decoded = AuthService.verifyToken(token);
-    (req as any).user = decoded;
+    const decoded = await AuthService.verifyTokenWithVersion(token);
+    req.user = decoded;
 
     next();
-  } catch (error) {
+  } catch {
     return res.status(401).json({ error: "Invalid or expired token" });
   }
 };

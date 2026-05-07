@@ -1,17 +1,28 @@
 import { create } from "zustand";
 
+interface Psychologist {
+  id: string;
+  email: string;
+  name: string;
+}
+
 interface AuthState {
-  psychologist: { id: string; email: string; name: string } | null;
+  psychologist: Psychologist | null;
   isAuthenticated: boolean;
-  login: (psychologist: any) => void;
+  // bootstrapped indica se a verificação inicial via /auth/me já terminou
+  bootstrapped: boolean;
+  login: (psychologist: Psychologist) => void;
   logout: () => void;
+  setBootstrapped: (value: boolean) => void;
 }
 
 export const useAuthStore = create<AuthState>((set) => ({
   psychologist: null,
   isAuthenticated: false,
+  bootstrapped: false,
   login: (psychologist) => set({ psychologist, isAuthenticated: true }),
   logout: () => set({ psychologist: null, isAuthenticated: false }),
+  setBootstrapped: (value) => set({ bootstrapped: value }),
 }));
 
 interface SessionState {

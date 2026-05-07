@@ -7,6 +7,22 @@ const api = axios.create({
   withCredentials: true,
 });
 
+// Interceptor: 401 em rotas autenticadas → emitir evento global para o store reagir
+// (não redireciona aqui para evitar acoplar axios ao react-router)
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    const status = error?.response?.status;
+    const url: string = error?.config?.url ?? "";
+    // Ignorar 401 do próprio /auth/me (bootstrap silencioso) e do /auth/login
+    const isAuthEndpoint = url.includes("/auth/login") || url.includes("/auth/me");
+    if (status === 401 && !isAuthEndpoint) {
+      window.dispatchEvent(new CustomEvent("auth:unauthorized"));
+    }
+    return Promise.reject(error);
+  },
+);
+
 export const authService = {
   register: (data: {
     name: string;
@@ -17,6 +33,7 @@ export const authService = {
   login: (data: { email: string; password: string }) =>
     api.post("/auth/login", data),
   logout: () => api.post("/auth/logout"),
+  me: () => api.get("/auth/me"),
 };
 
 export const sessionService = {

@@ -1,12 +1,13 @@
-import { PrismaClient } from "@prisma/client";
 import bcryptjs from "bcryptjs";
 import jwt from "jsonwebtoken";
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { AppError } from "../utils/AppError";
+import { prisma } from "../prismaClient";
+import { env } from "../config/env";
 
-const prisma = new PrismaClient();
-const JWT_SECRET = process.env.JWT_SECRET || "secret-key";
-const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || "8h";
+const JWT_SECRET = env.JWT_SECRET;
+const JWT_EXPIRES_IN = env.JWT_EXPIRES_IN;
 
 // Validation schemas
 export const registerPsychologistSchema = z.object({
@@ -24,6 +25,10 @@ export const loginSchema = z.object({
 export const createSessionSchema = z.object({
   scheduledAt: z.string().datetime(),
   durationMinutes: z.number().int().min(15).max(480),
+});
+
+export const updateSessionStatusSchema = z.object({
+  status: z.enum(["SCHEDULED", "IN_PROGRESS", "COMPLETED", "CANCELLED"]),
 });
 
 export class AuthService {
@@ -75,10 +80,14 @@ export class AuthService {
     }
 
     const token = jwt.sign(
-      { id: psychologist.id, email: psychologist.email },
+      {
+        id: psychologist.id,
+        email: psychologist.email,
+        v: psychologist.tokenVersion,
+      },
       JWT_SECRET,
       {
-        expiresIn: JWT_EXPIRES_IN,
+        expiresIn: JWT_EXPIRES_IN as jwt.SignOptions["expiresIn"],
       },
     );
 
@@ -92,16 +101,60 @@ export class AuthService {
     };
   }
 
-  static verifyToken(token: string): { id: string; email: string } {
+  // Decodifica e verifica assinatura/expiração. Não consulta o DB —
+  // a verificação de tokenVersion fica em verifyTokenWithVersion para
+  // não obrigar todo handler de socket/route a ir ao DB.
+  static verifyToken(token: string): {
+    id: string;
+    email: string;
+    v?: number;
+  } {
     try {
       const decoded = jwt.verify(token, JWT_SECRET) as {
         id: string;
         email: string;
+        v?: number;
       };
       return decoded;
     } catch {
       throw new Error("Invalid token");
     }
+  }
+
+  // Verifica assinatura + tokenVersion no DB (uso pelo middleware HTTP autenticado).
+  static async verifyTokenWithVersion(
+    token: string,
+  ): Promise<{ id: string; email: string }> {
+    const decoded = AuthService.verifyToken(token);
+    const psychologist = await prisma.psychologist.findUnique({
+      where: { id: decoded.id },
+      select: { id: true, email: true, tokenVersion: true },
+    });
+    if (!psychologist) {
+      throw new Error("Invalid token");
+    }
+    if (decoded.v !== psychologist.tokenVersion) {
+      throw new Error("Token revoked");
+    }
+    return { id: psychologist.id, email: psychologist.email };
+  }
+
+  static async invalidateTokens(psychologistId: string): Promise<void> {
+    await prisma.psychologist.update({
+      where: { id: psychologistId },
+      data: { tokenVersion: { increment: 1 } },
+    });
+  }
+
+  static async getById(id: string) {
+    const psychologist = await prisma.psychologist.findUnique({
+      where: { id },
+      select: { id: true, email: true, name: true },
+    });
+    if (!psychologist) {
+      throw new AppError("Not found", 404);
+    }
+    return psychologist;
   }
 }
 
@@ -114,7 +167,7 @@ export class SessionService {
       throw new AppError("scheduledAt must be in the future", 400);
     }
 
-    const accessToken = crypto.randomUUID();
+    const accessToken = randomUUID();
 
     const session = await prisma.session.create({
       data: {
@@ -142,8 +195,27 @@ export class SessionService {
     });
   }
 
-  static async updateSessionStatus(sessionId: string, status: string) {
-    const updateData: any = { status };
+  static async updateSessionStatus(
+    sessionId: string,
+    psychologistId: string,
+    status: z.infer<typeof updateSessionStatusSchema>["status"],
+  ) {
+    const session = await prisma.session.findUnique({
+      where: { id: sessionId },
+      select: { id: true, psychologistId: true },
+    });
+    if (!session) {
+      throw new AppError("Session not found", 404);
+    }
+    if (session.psychologistId !== psychologistId) {
+      throw new AppError("Forbidden", 403);
+    }
+
+    const updateData: {
+      status: typeof status;
+      startedAt?: Date;
+      endedAt?: Date;
+    } = { status };
     if (status === "IN_PROGRESS") {
       updateData.startedAt = new Date();
     } else if (status === "COMPLETED" || status === "CANCELLED") {
