@@ -1,32 +1,39 @@
-import { Router, Request, Response, NextFunction } from "express";
+import { Router } from "express";
+import rateLimit from "express-rate-limit";
 import * as controllers from "../controllers/index";
-import { AuthService } from "../services/index";
+import { authenticateToken as authMiddleware } from "../middleware/auth";
 
 const router = Router();
 
-// Auth middleware
-const authMiddleware = (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const token = req.cookies.jwt || req.headers.authorization?.split(" ")[1];
+// Rate limit para endpoints de autenticação — protege contra brute force
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 min
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many auth attempts. Try again later." },
+});
 
-    if (!token) {
-      return res.status(401).json({ error: "No token provided" });
-    }
-
-    const decoded = AuthService.verifyToken(token);
-    (req as any).user = decoded;
-    next();
-  } catch {
-    res.status(401).json({ error: "Invalid token" });
-  }
-};
+// Rate limit para validação de token público — protege contra enumeração
+const joinLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000, // 5 min
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many requests. Try again later." },
+});
 
 // Public routes
-router.post("/auth/register", controllers.registerPsychologist);
-router.post("/auth/login", controllers.loginPsychologist);
-router.get("/sessions/join/:token", controllers.validateSessionToken);
+router.post("/auth/register", authLimiter, controllers.registerPsychologist);
+router.post("/auth/login", authLimiter, controllers.loginPsychologist);
+router.get(
+  "/sessions/join/:token",
+  joinLimiter,
+  controllers.validateSessionToken,
+);
 
 // Protected routes
+router.get("/auth/me", authMiddleware, controllers.getCurrentUser);
 router.post("/auth/logout", authMiddleware, controllers.logoutPsychologist);
 router.post("/sessions", authMiddleware, controllers.createSession);
 router.get("/sessions", authMiddleware, controllers.listSessions);

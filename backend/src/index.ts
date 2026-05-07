@@ -1,40 +1,51 @@
 import express, { Request, Response, NextFunction } from "express";
 import cors from "cors";
 import cookieParser from "cookie-parser";
-import dotenv from "dotenv";
+import helmet from "helmet";
+import { pinoHttp } from "pino-http";
 import { createServer } from "http";
 import { Server as SocketIOServer } from "socket.io";
-import { PrismaClient } from "@prisma/client";
 import { ZodError } from "zod";
 import router from "./routes/index";
 import { registerSignalingHandlers } from "./socket/signalingHandler";
-
-dotenv.config();
+import { prisma } from "./prismaClient";
+import { env } from "./config/env";
+import { logger } from "./config/logger";
 
 const app = express();
 const httpServer = createServer(app);
 
 export const io = new SocketIOServer(httpServer, {
   cors: {
-    origin: process.env.CLIENT_URL || "http://localhost:5173",
+    origin: env.CLIENT_URL,
     credentials: true,
   },
 });
 
-export const prisma = new PrismaClient();
+export { prisma };
 
 // Registrar handlers de sinalização WebRTC
 registerSignalingHandlers(io, prisma);
 
-// Middlewares — ordem importa: cookie-parser antes das rotas
-app.use(express.json());
+// Middlewares — ordem importa: helmet → cors → parsers → cookie → logger → rotas
+app.use(helmet());
 app.use(
   cors({
-    origin: process.env.CLIENT_URL || "http://localhost:5173",
+    origin: env.CLIENT_URL,
     credentials: true,
   }),
 );
+app.use(express.json({ limit: "100kb" }));
 app.use(cookieParser());
+app.use(
+  pinoHttp({
+    logger,
+    // Reduzir verbosidade — não logamos health checks
+    autoLogging: {
+      ignore: (req) => req.url === "/api/health",
+    },
+  }),
+);
 
 // Health check (antes das rotas da API)
 app.get("/api/health", (_req: Request, res: Response) => {
@@ -51,7 +62,7 @@ app.use((_req: Request, res: Response) => {
 
 // Middleware global de erros — deve ser o último middleware registrado
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
-app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
+app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
   // Erros de validação Zod retornam 400 com detalhes dos campos inválidos
   if (err instanceof ZodError) {
     return res.status(400).json({
@@ -60,13 +71,18 @@ app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
     });
   }
 
-  const status = (err as any)?.status ?? 500;
-  const message = (err as any)?.message ?? "Internal Server Error";
+  const status =
+    (err as { status?: number })?.status ??
+    (err as { statusCode?: number })?.statusCode ??
+    500;
+  const message =
+    (err as { message?: string })?.message ?? "Internal Server Error";
 
-  // Não logar dados sensíveis em produção (conformidade LGPD)
-  if (process.env.NODE_ENV !== "production") {
-    console.error(err);
-  }
+  // Logar erro estruturado — req.log inclui requestId/método/url quando pino-http está ativo
+  (req.log ?? logger).error(
+    { err, status },
+    "Request failed",
+  );
 
   res.status(status).json({
     error: message,
@@ -74,15 +90,16 @@ app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
   });
 });
 
-const PORT = process.env.PORT || 3333;
-
-httpServer.listen(PORT, () => {
-  console.log(`🚀 Server running on http://localhost:${PORT}`);
-  console.log(`📡 WebSocket ready on ws://localhost:${PORT}`);
+httpServer.listen(env.PORT, () => {
+  logger.info(`Server running on http://localhost:${env.PORT}`);
+  logger.info(`WebSocket ready on ws://localhost:${env.PORT}`);
 });
 
 // Graceful shutdown
-process.on("SIGTERM", async () => {
+const shutdown = async (signal: string) => {
+  logger.info({ signal }, "Shutting down gracefully");
   await prisma.$disconnect();
   httpServer.close(() => process.exit(0));
-});
+};
+process.on("SIGTERM", () => void shutdown("SIGTERM"));
+process.on("SIGINT", () => void shutdown("SIGINT"));
