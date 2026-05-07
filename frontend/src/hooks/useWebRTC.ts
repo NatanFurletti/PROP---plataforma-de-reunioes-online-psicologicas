@@ -1,19 +1,29 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { initializeSocket } from "../services/socket";
+import { initializeSocket, closeSocket } from "../services/socket";
 
 interface UseWebRTCOptions {
   sessionId: string;
   role: "host" | "guest";
+  // Necessário apenas para guest (host autentica via cookie JWT)
+  accessToken?: string;
   onSessionEnded?: () => void;
+  onRoomFull?: () => void;
   onError?: (error: Error) => void;
 }
+
+type ConnectionState =
+  | "idle"
+  | "connecting"
+  | "connected"
+  | "reconnecting"
+  | "failed";
 
 interface UseWebRTCReturn {
   localStream: MediaStream | null;
   remoteStream: MediaStream | null;
   isMicMuted: boolean;
   isCameraOff: boolean;
-  connectionState: "idle" | "connecting" | "connected" | "failed";
+  connectionState: ConnectionState;
   toggleMic: () => void;
   toggleCamera: () => void;
   endCall: () => void;
@@ -22,31 +32,53 @@ interface UseWebRTCReturn {
 export const useWebRTC = ({
   sessionId,
   role,
+  accessToken,
   onSessionEnded,
+  onRoomFull,
   onError,
 }: UseWebRTCOptions): UseWebRTCReturn => {
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
   const [isMicMuted, setIsMicMuted] = useState(false);
   const [isCameraOff, setIsCameraOff] = useState(false);
-  const [connectionState, setConnectionState] = useState<
-    "idle" | "connecting" | "connected" | "failed"
-  >("idle");
+  const [connectionState, setConnectionState] =
+    useState<ConnectionState>("idle");
 
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
   const reconnectAttemptsRef = useRef(0);
-  // Guardar referências estáveis para callbacks para evitar re-registros desnecessários
+  // Buffer de candidatos ICE recebidos antes de setRemoteDescription
+  const pendingIceCandidatesRef = useRef<RTCIceCandidateInit[]>([]);
+  // Flag para saber se já podemos aplicar candidatos ICE diretamente
+  const remoteDescriptionSetRef = useRef(false);
+
+  // Guardar referências estáveis para callbacks para evitar re-registros
   const onSessionEndedRef = useRef(onSessionEnded);
+  const onRoomFullRef = useRef(onRoomFull);
   const onErrorRef = useRef(onError);
 
   useEffect(() => {
     onSessionEndedRef.current = onSessionEnded;
   }, [onSessionEnded]);
-
+  useEffect(() => {
+    onRoomFullRef.current = onRoomFull;
+  }, [onRoomFull]);
   useEffect(() => {
     onErrorRef.current = onError;
   }, [onError]);
+
+  // Aplica candidatos ICE bufferizados após setRemoteDescription
+  const flushPendingCandidates = useCallback(async (pc: RTCPeerConnection) => {
+    const pending = pendingIceCandidatesRef.current;
+    pendingIceCandidatesRef.current = [];
+    for (const candidate of pending) {
+      try {
+        await pc.addIceCandidate(candidate);
+      } catch (err) {
+        console.warn("Failed to add buffered ICE candidate:", err);
+      }
+    }
+  }, []);
 
   // Criar e configurar RTCPeerConnection
   const createPeerConnection = useCallback(
@@ -80,15 +112,55 @@ export const useWebRTC = ({
       // Enviar candidatos ICE ao servidor de sinalização
       pc.onicecandidate = (event) => {
         if (event.candidate) {
-          const socket = initializeSocket();
-          socket.emit("ice-candidate", {
-            sessionId,
-            candidate: event.candidate,
-          });
+          // Tentar usar socket existente; ignorar se não inicializado ainda
+          try {
+            const socket = initializeSocket({ sessionId, role, accessToken });
+            // initializeSocket recria caso auth tenha mudado; aqui só queremos pegar o atual
+            socket.emit("ice-candidate", { candidate: event.candidate });
+          } catch {
+            // socket pode não estar pronto — candidato perdido é tolerável
+          }
         }
       };
 
-      // Monitorar estado da conexão e tentar reconectar se necessário
+      // ICE restart leve: tentado quando a conexão "tropeça" mas o PC ainda existe.
+      // Apenas o host reinicia ICE — o servidor entrega a nova offer ao guest.
+      const tryIceRestart = async () => {
+        if (role !== "host") return;
+        try {
+          const offer = await pc.createOffer({ iceRestart: true });
+          await pc.setLocalDescription(offer);
+          const socket = initializeSocket({ sessionId, role, accessToken });
+          socket.emit("offer", { offer: pc.localDescription });
+        } catch (err) {
+          onErrorRef.current?.(
+            err instanceof Error ? err : new Error("ICE restart failed"),
+          );
+        }
+      };
+
+      // Reconstrução completa: usado quando ICE restart não resolveu.
+      const rebuildPeerConnection = () => {
+        if (!localStreamRef.current) return;
+        const newPc = createPeerConnection(localStreamRef.current);
+        peerConnectionRef.current?.close();
+        peerConnectionRef.current = newPc;
+        remoteDescriptionSetRef.current = false;
+        pendingIceCandidatesRef.current = [];
+        // Reentrar na sala — servidor reemitirá user-joined
+        const socket = initializeSocket({ sessionId, role, accessToken });
+        socket.emit("join-room");
+      };
+
+      // Estado ICE: detecta quebras transitórias antes de connectionState
+      pc.oniceconnectionstatechange = () => {
+        if (pc.iceConnectionState === "disconnected") {
+          // Pode se recuperar sozinho — apenas sinalizar reconnecting
+          setConnectionState("reconnecting");
+        }
+      };
+
+      // Monitorar estado de conexão e aplicar estratégia em camadas
       pc.onconnectionstatechange = () => {
         switch (pc.connectionState) {
           case "connecting":
@@ -98,48 +170,42 @@ export const useWebRTC = ({
             reconnectAttemptsRef.current = 0;
             setConnectionState("connected");
             break;
-          case "failed":
-            setConnectionState("failed");
-            if (reconnectAttemptsRef.current < 3) {
-              reconnectAttemptsRef.current++;
-              setTimeout(() => {
-                // Recriar peer connection e renegociar
-                if (localStreamRef.current) {
-                  const newPc = createPeerConnection(localStreamRef.current);
-                  peerConnectionRef.current?.close();
-                  peerConnectionRef.current = newPc;
-
-                  if (role === "host") {
-                    newPc
-                      .createOffer()
-                      .then((offer) => newPc.setLocalDescription(offer))
-                      .then(() => {
-                        const socket = initializeSocket();
-                        socket.emit("offer", {
-                          sessionId,
-                          offer: newPc.localDescription,
-                        });
-                      })
-                      .catch((err) => {
-                        onErrorRef.current?.(
-                          err instanceof Error ? err : new Error(String(err))
-                        );
-                      });
-                  }
-                }
-              }, 3000);
-            } else {
+          case "disconnected":
+            setConnectionState("reconnecting");
+            break;
+          case "failed": {
+            const attempt = reconnectAttemptsRef.current;
+            if (attempt >= 3) {
+              setConnectionState("failed");
               onErrorRef.current?.(
-                new Error("Connection failed after 3 attempts")
+                new Error("Connection failed after 3 attempts"),
               );
+              return;
             }
+            reconnectAttemptsRef.current = attempt + 1;
+            setConnectionState("reconnecting");
+            // Backoff exponencial: 1s, 2s, 4s
+            const delayMs = 1000 * Math.pow(2, attempt);
+            setTimeout(() => {
+              // Primeira tentativa: ICE restart (mantém PC e tracks)
+              // Tentativas seguintes: reconstrução completa
+              if (attempt === 0) {
+                void tryIceRestart();
+              } else {
+                rebuildPeerConnection();
+              }
+            }, delayMs);
+            break;
+          }
+          case "closed":
+            setConnectionState("idle");
             break;
         }
       };
 
       return pc;
     },
-    [sessionId, role]
+    [sessionId, role, accessToken],
   );
 
   // Encerrar chamada e limpar recursos
@@ -151,26 +217,27 @@ export const useWebRTC = ({
     peerConnectionRef.current?.close();
     peerConnectionRef.current = null;
 
-    // Emitir encerramento de sessão se for o host
+    // Emitir encerramento de sessão se for o host (servidor revalida o role)
     if (role === "host") {
-      const socket = initializeSocket();
-      socket.emit("session-end", { sessionId });
+      try {
+        const socket = initializeSocket({ sessionId, role, accessToken });
+        socket.emit("session-end");
+      } catch {
+        // socket pode já estar fechado
+      }
     }
 
-    // Remover listeners do socket
-    const socket = initializeSocket();
-    socket.off("user-joined");
-    socket.off("offer");
-    socket.off("answer");
-    socket.off("ice-candidate");
-    socket.off("session-ended");
+    // Fechar conexão socket por completo
+    closeSocket();
 
     // Resetar estados
     setLocalStream(null);
     setRemoteStream(null);
     localStreamRef.current = null;
+    remoteDescriptionSetRef.current = false;
+    pendingIceCandidatesRef.current = [];
     setConnectionState("idle");
-  }, [sessionId, role]);
+  }, [sessionId, role, accessToken]);
 
   useEffect(() => {
     let cancelled = false;
@@ -187,7 +254,7 @@ export const useWebRTC = ({
         if (cancelled) return;
         setConnectionState("failed");
         onErrorRef.current?.(
-          err instanceof Error ? err : new Error("Failed to access media devices")
+          err instanceof Error ? err : new Error("Failed to access media devices"),
         );
         return;
       }
@@ -205,11 +272,26 @@ export const useWebRTC = ({
       const pc = createPeerConnection(stream);
       peerConnectionRef.current = pc;
 
-      // 3. Inicializar socket e entrar na sala
-      const socket = initializeSocket();
-      socket.emit("join-room", { sessionId, role });
+      // 3. Inicializar socket com o handshake autenticado
+      const socket = initializeSocket({ sessionId, role, accessToken });
 
-      // 4. Registrar listeners de sinalização
+      socket.on("connect_error", (err: Error) => {
+        if (cancelled) return;
+        onErrorRef.current?.(err);
+      });
+
+      // Após conectar, entrar na sala
+      socket.on("connect", () => {
+        socket.emit("join-room");
+      });
+      // Caso a conexão já esteja estabelecida (reuso ou rápido), garantir o emit
+      if (socket.connected) socket.emit("join-room");
+
+      // Sala cheia
+      socket.on("room-full", () => {
+        if (cancelled) return;
+        onRoomFullRef.current?.();
+      });
 
       // Host cria offer quando o guest entra
       socket.on("user-joined", async () => {
@@ -218,10 +300,10 @@ export const useWebRTC = ({
           try {
             const offer = await pc.createOffer();
             await pc.setLocalDescription(offer);
-            socket.emit("offer", { sessionId, offer: pc.localDescription });
+            socket.emit("offer", { offer: pc.localDescription });
           } catch (err) {
             onErrorRef.current?.(
-              err instanceof Error ? err : new Error("Failed to create offer")
+              err instanceof Error ? err : new Error("Failed to create offer"),
             );
           }
         }
@@ -232,19 +314,20 @@ export const useWebRTC = ({
         "offer",
         async ({ offer }: { offer: RTCSessionDescriptionInit }) => {
           if (cancelled) return;
-          if (role === "guest") {
-            try {
-              await pc.setRemoteDescription(offer);
-              const answer = await pc.createAnswer();
-              await pc.setLocalDescription(answer);
-              socket.emit("answer", { sessionId, answer: pc.localDescription });
-            } catch (err) {
-              onErrorRef.current?.(
-                err instanceof Error ? err : new Error("Failed to create answer")
-              );
-            }
+          if (role !== "guest") return;
+          try {
+            await pc.setRemoteDescription(offer);
+            remoteDescriptionSetRef.current = true;
+            await flushPendingCandidates(pc);
+            const answer = await pc.createAnswer();
+            await pc.setLocalDescription(answer);
+            socket.emit("answer", { answer: pc.localDescription });
+          } catch (err) {
+            onErrorRef.current?.(
+              err instanceof Error ? err : new Error("Failed to create answer"),
+            );
           }
-        }
+        },
       );
 
       // Host recebe answer do guest
@@ -254,34 +337,45 @@ export const useWebRTC = ({
           if (cancelled) return;
           try {
             await pc.setRemoteDescription(answer);
+            remoteDescriptionSetRef.current = true;
+            await flushPendingCandidates(pc);
           } catch (err) {
             onErrorRef.current?.(
               err instanceof Error
                 ? err
-                : new Error("Failed to set remote description")
+                : new Error("Failed to set remote description"),
             );
           }
-        }
+        },
       );
 
-      // Adicionar candidatos ICE recebidos
+      // Adicionar candidatos ICE recebidos — bufferizar se ainda não houver remoteDescription
       socket.on(
         "ice-candidate",
         async ({ candidate }: { candidate: RTCIceCandidateInit }) => {
           if (cancelled) return;
+          if (!remoteDescriptionSetRef.current) {
+            pendingIceCandidatesRef.current.push(candidate);
+            return;
+          }
           try {
             await pc.addIceCandidate(candidate);
           } catch (err) {
-            // Candidatos ICE podem falhar silenciosamente em alguns casos
             console.warn("Failed to add ICE candidate:", err);
           }
-        }
+        },
       );
 
       // Sessão encerrada pelo host
       socket.on("session-ended", () => {
         if (cancelled) return;
         onSessionEndedRef.current?.();
+      });
+
+      // Outro participante saiu (ex: queda) — apenas atualiza UI
+      socket.on("user-left", () => {
+        if (cancelled) return;
+        setRemoteStream(null);
       });
     };
 
@@ -293,7 +387,7 @@ export const useWebRTC = ({
       endCall();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId, role]);
+  }, [sessionId, role, accessToken]);
 
   // Alternar microfone
   const toggleMic = useCallback(() => {

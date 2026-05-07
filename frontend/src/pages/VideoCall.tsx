@@ -1,44 +1,54 @@
 import React, { useState } from "react";
-import { useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { Navigate, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { ControlButton } from "../components/ControlButton";
 import { VideoTile } from "../components/VideoTile";
 import { useWebRTC } from "../hooks/useWebRTC";
 
+interface PatientSession {
+  patientName?: string;
+  accessToken?: string;
+  sessionId?: string;
+}
+
+function readPatientSession(): PatientSession | null {
+  try {
+    const raw = sessionStorage.getItem("patientSession");
+    if (!raw) return null;
+    return JSON.parse(raw) as PatientSession;
+  } catch {
+    return null;
+  }
+}
+
 export const VideoCall: React.FC = () => {
   const { sessionId } = useParams<{ sessionId: string }>();
   const [searchParams] = useSearchParams();
-  const navigate = useNavigate();
 
   const rawRole = searchParams.get("role");
 
-  // Validar role — redirecionar para / se inválido
+  // Validar role declarativamente — sem chamar navigate() durante render
   if (rawRole !== "host" && rawRole !== "guest") {
-    navigate("/", { replace: true });
-    return null;
+    return <Navigate to="/" replace />;
   }
 
   const role = rawRole as "host" | "guest";
 
-  // Para guest, ler patientName do sessionStorage
-  const patientName =
-    role === "guest"
-      ? (() => {
-          try {
-            const raw = sessionStorage.getItem("patientSession");
-            if (!raw) return null;
-            const parsed = JSON.parse(raw) as { patientName?: string };
-            return parsed.patientName ?? null;
-          } catch {
-            return null;
-          }
-        })()
-      : null;
+  // Para guest, ler patientName + accessToken do sessionStorage
+  const patientSession = role === "guest" ? readPatientSession() : null;
+  const patientName = patientSession?.patientName ?? null;
+  const accessToken = patientSession?.accessToken;
+
+  // Guest sem accessToken não pode entrar — redirecionar para a tela de join
+  if (role === "guest" && !accessToken) {
+    return <Navigate to="/" replace />;
+  }
 
   return (
     <VideoCallInner
       sessionId={sessionId!}
       role={role}
       patientName={patientName}
+      accessToken={accessToken}
     />
   );
 };
@@ -47,12 +57,14 @@ interface VideoCallInnerProps {
   sessionId: string;
   role: "host" | "guest";
   patientName: string | null;
+  accessToken?: string;
 }
 
 const VideoCallInner: React.FC<VideoCallInnerProps> = ({
   sessionId,
   role,
   patientName,
+  accessToken,
 }) => {
   const navigate = useNavigate();
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -70,6 +82,10 @@ const VideoCallInner: React.FC<VideoCallInnerProps> = ({
     setErrorMessage(error.message || "Ocorreu um erro na videochamada.");
   };
 
+  const handleRoomFull = () => {
+    setErrorMessage("A sala já tem 2 participantes. Tente novamente mais tarde.");
+  };
+
   const {
     localStream,
     remoteStream,
@@ -82,7 +98,9 @@ const VideoCallInner: React.FC<VideoCallInnerProps> = ({
   } = useWebRTC({
     sessionId,
     role,
+    accessToken,
     onSessionEnded: handleSessionEnded,
+    onRoomFull: handleRoomFull,
     onError: handleError,
   });
 
@@ -105,13 +123,18 @@ const VideoCallInner: React.FC<VideoCallInnerProps> = ({
     idle: "bg-gray-500",
     connecting: "bg-yellow-500",
     connected: "bg-green-500",
+    reconnecting: "bg-orange-500",
     failed: "bg-red-500",
   }[connectionState];
 
   const connectionBadgeLabel = {
     idle: "Aguardando",
-    connecting: "Conectando...",
+    connecting:
+      role === "guest" && !remoteStream
+        ? "Aguardando o psicólogo..."
+        : "Conectando...",
     connected: "Conectado",
+    reconnecting: "Reconectando...",
     failed: "Falha na conexão",
   }[connectionState];
 
@@ -141,11 +164,22 @@ const VideoCallInner: React.FC<VideoCallInnerProps> = ({
           <VideoTile stream={remoteStream} label={remoteLabel} isMuted={false} />
         </div>
 
-        {/* Loading overlay while not connected */}
-        {connectionState !== "connected" && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center bg-gray-950 bg-opacity-80 z-10">
-            <div className="w-12 h-12 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mb-4" />
-            <p className="text-gray-300 text-sm">{connectionBadgeLabel}</p>
+        {/* Loading overlay enquanto ainda não houve primeira conexão */}
+        {(connectionState === "idle" ||
+          connectionState === "connecting" ||
+          connectionState === "failed") &&
+          !remoteStream && (
+            <div className="absolute inset-0 flex flex-col items-center justify-center bg-gray-950 bg-opacity-80 z-10">
+              <div className="w-12 h-12 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mb-4" />
+              <p className="text-gray-300 text-sm">{connectionBadgeLabel}</p>
+            </div>
+          )}
+
+        {/* Toast discreto durante reconexão — não esconde o vídeo remoto */}
+        {connectionState === "reconnecting" && (
+          <div className="absolute top-4 right-4 z-20 bg-orange-600 text-white px-3 py-1.5 rounded-lg text-xs flex items-center gap-2">
+            <div className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" />
+            Reconectando...
           </div>
         )}
 
