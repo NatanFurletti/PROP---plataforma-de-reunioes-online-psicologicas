@@ -52,7 +52,7 @@ psiconnect/
 | Roteamento | React Router v6 |
 | Videochamada | WebRTC (nativo) |
 | WebSocket (cliente) | Socket.IO Client |
-| Autenticação | JWT via HTTP-only cookies |
+| Autenticação | JWT via HTTP-only cookies (com tokenVersion para revogação) |
 | Testes | Vitest + Testing Library |
 
 ### Backend
@@ -62,9 +62,11 @@ psiconnect/
 | Framework | Express.js |
 | WebSocket / Signaling | Socket.IO |
 | Banco de dados | PostgreSQL + Prisma ORM |
-| Autenticação | JWT + bcrypt |
-| Variáveis de ambiente | dotenv |
-| Testes | Jest + Supertest |
+| Autenticação | JWT + bcrypt + tokenVersion |
+| Variáveis de ambiente | dotenv (validadas em `config/env.ts`) |
+| Logs | pino + pino-http (com redact de campos sensíveis) |
+| Segurança HTTP | helmet + express-rate-limit |
+| Testes | Vitest |
 
 ### Infraestrutura
 | Componente | Tecnologia |
@@ -142,6 +144,14 @@ Psicólogo (Host)              Servidor (Signaling)           Paciente (Guest)
 - Limitar salas a **exatamente 2 participantes** (psicólogo + paciente)
 - Emitir evento `session-end` ao encerrar — ambos os lados devem limpar os streams
 
+**Autenticação no Socket.IO (obrigatória):**
+- Middleware `io.use(...)` valida o handshake antes do `connection`.
+- Cliente envia `auth: { sessionId, role, accessToken? }`.
+- Host autentica via cookie JWT (mesmo cookie da API). O `psychologistId` decodificado deve bater com o dono da `Session`.
+- Guest autentica via `accessToken` (igual ao da `Session`).
+- Os handlers de socket (`offer`/`answer`/etc.) **leem `sessionId` e `role` de `socket.data.auth`**, nunca do payload do cliente — isso impede que um socket emita para sala que não autenticou.
+- Apenas o host pode emitir `session-end` (servidor revalida o role).
+
 ---
 
 ## 🧩 Padrões de Código
@@ -202,6 +212,7 @@ model Psychologist {
   email         String    @unique
   passwordHash  String
   crp           String?   // Registro no Conselho Regional de Psicologia
+  tokenVersion  Int       @default(0) // incrementada no logout para revogar JWTs
   createdAt     DateTime  @default(now())
   sessions      Session[]
 }
@@ -233,7 +244,8 @@ enum SessionStatus {
 |---|---|---|---|
 | `POST` | `/auth/register` | Cadastro de psicólogo | ❌ |
 | `POST` | `/auth/login` | Login | ❌ |
-| `POST` | `/auth/logout` | Logout | ✅ |
+| `GET`  | `/auth/me` | Retorna o psicólogo autenticado | ✅ |
+| `POST` | `/auth/logout` | Logout (incrementa tokenVersion) | ✅ |
 | `GET` | `/sessions` | Listar sessões do psicólogo | ✅ |
 | `POST` | `/sessions` | Criar nova sessão | ✅ |
 | `GET` | `/sessions/:id` | Detalhes de uma sessão | ✅ |
