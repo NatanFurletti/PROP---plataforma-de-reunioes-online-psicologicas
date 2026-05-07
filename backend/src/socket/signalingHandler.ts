@@ -1,5 +1,8 @@
 import { Server, Socket } from "socket.io";
 import { PrismaClient } from "@prisma/client";
+import cookie from "cookie";
+import { AuthService } from "../services/index";
+import { logger } from "../config/logger";
 
 // Subconjunto dos tipos WebRTC necessários para sinalização (não disponíveis no Node.js)
 interface RTCSessionDescriptionInit {
@@ -23,6 +26,23 @@ interface ParticipantInfo {
 // Estado de uma sala de sinalização
 interface RoomState {
   participants: Map<string, ParticipantInfo>; // key: socketId
+}
+
+// Dados validados anexados ao socket.data após o handshake
+interface SocketAuth {
+  sessionId: string;
+  role: "host" | "guest";
+  // Para host: id do psicólogo dono da sessão. Para guest: indefinido.
+  psychologistId?: string;
+}
+
+// Helper tipado: lê `auth` do socket.data preservando narrowing
+function getAuth(socket: Socket): SocketAuth | undefined {
+  return (socket.data as { auth?: SocketAuth }).auth;
+}
+
+function setAuth(socket: Socket, auth: SocketAuth): void {
+  (socket.data as { auth?: SocketAuth }).auth = auth;
 }
 
 // Mapa global de salas ativas: sessionId → RoomState
@@ -49,60 +69,153 @@ function findRoomBySocket(socketId: string): [string, RoomState] | undefined {
   return undefined;
 }
 
+// Extrai cookie 'jwt' do header de cookies do handshake
+function getJwtFromCookies(rawCookieHeader: string | undefined): string | null {
+  if (!rawCookieHeader) return null;
+  try {
+    const parsed = cookie.parse(rawCookieHeader);
+    return parsed.jwt ?? null;
+  } catch {
+    return null;
+  }
+}
+
 export function registerSignalingHandlers(
   io: Server,
   prisma: PrismaClient,
 ): void {
+  // Middleware de autenticação: valida sessionId/role/credenciais antes do `connection`
+  io.use(async (socket, next) => {
+    try {
+      const sessionId = socket.handshake.auth?.sessionId as string | undefined;
+      const role = socket.handshake.auth?.role as "host" | "guest" | undefined;
+      const accessToken = socket.handshake.auth?.accessToken as
+        | string
+        | undefined;
+
+      if (!sessionId || (role !== "host" && role !== "guest")) {
+        return next(new Error("Invalid handshake: sessionId/role required"));
+      }
+
+      const session = await prisma.session.findUnique({
+        where: { id: sessionId },
+      });
+      if (!session) {
+        return next(new Error("Session not found"));
+      }
+
+      if (session.status === "COMPLETED" || session.status === "CANCELLED") {
+        return next(new Error("Session no longer available"));
+      }
+
+      if (role === "host") {
+        // Host autentica via cookie JWT do psicólogo dono da sessão
+        const jwtToken = getJwtFromCookies(socket.handshake.headers.cookie);
+        if (!jwtToken) {
+          return next(new Error("Missing auth cookie"));
+        }
+        let decoded: { id: string; email: string };
+        try {
+          decoded = await AuthService.verifyTokenWithVersion(jwtToken);
+        } catch {
+          return next(new Error("Invalid auth token"));
+        }
+        if (decoded.id !== session.psychologistId) {
+          return next(new Error("Forbidden: not the session owner"));
+        }
+        setAuth(socket, { sessionId, role, psychologistId: decoded.id });
+      } else {
+        // Guest autentica via accessToken da sessão
+        if (!accessToken || accessToken !== session.accessToken) {
+          return next(new Error("Invalid access token"));
+        }
+        setAuth(socket, { sessionId, role });
+      }
+
+      next();
+    } catch (err) {
+      next(err instanceof Error ? err : new Error("Auth failed"));
+    }
+  });
+
   io.on("connection", (socket: Socket) => {
     // ----------------------------------------------------------------
     // join-room: participante entra na sala de sinalização
+    // O sessionId/role são lidos do auth validado, não do payload.
     // ----------------------------------------------------------------
-    socket.on(
-      "join-room",
-      (payload: { sessionId: string; role: "host" | "guest" }) => {
-        const { sessionId, role } = payload;
+    socket.on("join-room", async () => {
+      const auth = getAuth(socket);
+      if (!auth) return;
+      const { sessionId, role } = auth;
 
-        // Verificar se a sala já tem 2 participantes
-        const existing = rooms.get(sessionId);
-        if (existing && existing.participants.size >= 2) {
-          socket.emit("room-full", {
-            error: "Room already has 2 participants",
+      // Verificar se a sala já tem 2 participantes
+      const existing = rooms.get(sessionId);
+      if (existing && existing.participants.size >= 2) {
+        socket.emit("room-full", {
+          error: "Room already has 2 participants",
+        });
+        return;
+      }
+
+      // Garantir unicidade por role: se já existe um host/guest, rejeitar duplicado
+      if (existing) {
+        for (const p of existing.participants.values()) {
+          if (p.role === role) {
+            socket.emit("room-full", {
+              error: `A ${role} is already connected to this room`,
+            });
+            return;
+          }
+        }
+      }
+
+      // Criar sala se ainda não existir
+      if (!existing) {
+        rooms.set(sessionId, { participants: new Map() });
+      }
+
+      const room = rooms.get(sessionId)!;
+
+      // Adicionar socket à sala Socket.IO e ao Map interno
+      socket.join(sessionId);
+      room.participants.set(socket.id, { socketId: socket.id, role });
+
+      // Quando o host entra, marcar a sessão como IN_PROGRESS (idempotente)
+      if (role === "host") {
+        try {
+          await prisma.session.updateMany({
+            where: { id: sessionId, status: "SCHEDULED" },
+            data: { status: "IN_PROGRESS", startedAt: new Date() },
           });
-          return;
+        } catch (err) {
+          logger.error(
+            { err, sessionId },
+            "[signaling] Failed to mark session IN_PROGRESS",
+          );
         }
+      }
 
-        // Criar sala se ainda não existir
-        if (!existing) {
-          rooms.set(sessionId, { participants: new Map() });
-        }
-
-        const room = rooms.get(sessionId)!;
-
-        // Adicionar socket à sala Socket.IO e ao Map interno
-        socket.join(sessionId);
-        room.participants.set(socket.id, { socketId: socket.id, role });
-
-        // Notificar o outro participante (se já estiver na sala)
-        const otherId = getOtherParticipant(room, socket.id);
-        if (otherId) {
-          io.to(otherId).emit("user-joined", { role });
-        }
-      },
-    );
+      // Notificar o outro participante (se já estiver na sala)
+      const otherId = getOtherParticipant(room, socket.id);
+      if (otherId) {
+        io.to(otherId).emit("user-joined", { role });
+      }
+    });
 
     // ----------------------------------------------------------------
     // offer: encaminhar SDP offer para o outro participante
     // ----------------------------------------------------------------
     socket.on(
       "offer",
-      (payload: { sessionId: string; offer: RTCSessionDescriptionInit }) => {
-        const { sessionId, offer } = payload;
-        const room = rooms.get(sessionId);
+      (payload: { offer: RTCSessionDescriptionInit }) => {
+        const auth = getAuth(socket);
+        if (!auth) return;
+        const room = rooms.get(auth.sessionId);
         if (!room) return;
 
         const otherId = getOtherParticipant(room, socket.id);
         if (otherId) {
-          io.to(otherId).emit("offer", { offer });
+          io.to(otherId).emit("offer", { offer: payload.offer });
         }
       },
     );
@@ -112,14 +225,15 @@ export function registerSignalingHandlers(
     // ----------------------------------------------------------------
     socket.on(
       "answer",
-      (payload: { sessionId: string; answer: RTCSessionDescriptionInit }) => {
-        const { sessionId, answer } = payload;
-        const room = rooms.get(sessionId);
+      (payload: { answer: RTCSessionDescriptionInit }) => {
+        const auth = getAuth(socket);
+        if (!auth) return;
+        const room = rooms.get(auth.sessionId);
         if (!room) return;
 
         const otherId = getOtherParticipant(room, socket.id);
         if (otherId) {
-          io.to(otherId).emit("answer", { answer });
+          io.to(otherId).emit("answer", { answer: payload.answer });
         }
       },
     );
@@ -129,23 +243,28 @@ export function registerSignalingHandlers(
     // ----------------------------------------------------------------
     socket.on(
       "ice-candidate",
-      (payload: { sessionId: string; candidate: RTCIceCandidateInit }) => {
-        const { sessionId, candidate } = payload;
-        const room = rooms.get(sessionId);
+      (payload: { candidate: RTCIceCandidateInit }) => {
+        const auth = getAuth(socket);
+        if (!auth) return;
+        const room = rooms.get(auth.sessionId);
         if (!room) return;
 
         const otherId = getOtherParticipant(room, socket.id);
         if (otherId) {
-          io.to(otherId).emit("ice-candidate", { candidate });
+          io.to(otherId).emit("ice-candidate", { candidate: payload.candidate });
         }
       },
     );
 
     // ----------------------------------------------------------------
-    // session-end: psicólogo encerra a sessão
+    // session-end: somente o host pode encerrar
     // ----------------------------------------------------------------
-    socket.on("session-end", async (payload: { sessionId: string }) => {
-      const { sessionId } = payload;
+    socket.on("session-end", async () => {
+      const auth = getAuth(socket);
+      if (!auth) return;
+      if (auth.role !== "host") return;
+
+      const { sessionId } = auth;
       const room = rooms.get(sessionId);
 
       // Emitir session-ended para todos na sala (inclusive o remetente)
@@ -155,15 +274,13 @@ export function registerSignalingHandlers(
       try {
         await prisma.session.update({
           where: { id: sessionId },
-          data: { status: "COMPLETED" },
+          data: { status: "COMPLETED", endedAt: new Date() },
         });
-      } catch {
-        // Sessão pode não existir no banco — logar apenas em dev
-        if (process.env.NODE_ENV !== "production") {
-          console.error(
-            `[signaling] Falha ao atualizar status da sessão ${sessionId}`,
-          );
-        }
+      } catch (err) {
+        logger.error(
+          { err, sessionId },
+          "[signaling] Failed to update session status to COMPLETED",
+        );
       }
 
       // Limpar a sala do Map

@@ -52,7 +52,11 @@ export const JoinSession: React.FC = () => {
 
     sessionStorage.setItem(
       "patientSession",
-      JSON.stringify({ patientName: patientName.trim(), token, sessionId: sessionData.sessionId })
+      JSON.stringify({
+        patientName: patientName.trim(),
+        accessToken: token,
+        sessionId: sessionData.sessionId,
+      }),
     );
 
     navigate(`/call/${sessionData.sessionId}?role=guest`);
