@@ -264,13 +264,18 @@ export const Dashboard: React.FC = () => {
                         {isCopied ? "Copiado!" : "Copiar link"}
                       </button>
 
-                      {session.status === "SCHEDULED" && (
+                      {(session.status === "SCHEDULED" ||
+                        session.status === "IN_PROGRESS") && (
                         <button
                           onClick={() => handleStart(session)}
                           className="text-xs bg-green-600 hover:bg-green-700 text-white font-semibold px-3 py-1.5 rounded"
-                          aria-label="Iniciar sessão"
+                          aria-label={
+                            session.status === "IN_PROGRESS"
+                              ? "Reentrar na sessão"
+                              : "Iniciar sessão"
+                          }
                         >
-                          Iniciar
+                          {session.status === "IN_PROGRESS" ? "Reentrar" : "Iniciar"}
                         </button>
                       )}
                     </div>

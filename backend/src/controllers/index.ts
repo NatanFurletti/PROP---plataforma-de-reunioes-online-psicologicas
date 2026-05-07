@@ -5,6 +5,7 @@ import {
   registerPsychologistSchema,
   loginSchema,
   createSessionSchema,
+  updateSessionStatusSchema,
 } from "../services/index";
 import { AppError } from "../utils/AppError";
 
@@ -53,8 +54,36 @@ export const logoutPsychologist = async (
   next: NextFunction,
 ) => {
   try {
-    res.cookie("jwt", "", { httpOnly: true, maxAge: 0 });
+    const userId = req.user?.id;
+    if (userId) {
+      // Incrementa tokenVersion no DB → invalida o JWT atual e quaisquer
+      // outras sessões abertas em outros dispositivos do mesmo usuário.
+      await AuthService.invalidateTokens(userId);
+    }
+
+    res.clearCookie("jwt", {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "strict",
+    });
     res.json({ message: "Logged out successfully" });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getCurrentUser = async (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+    const psychologist = await AuthService.getById(userId);
+    res.json({ psychologist });
   } catch (error) {
     next(error);
   }
@@ -66,7 +95,7 @@ export const createSession = async (
   next: NextFunction,
 ) => {
   try {
-    const psychologistId = (req as any).user?.id;
+    const psychologistId = req.user?.id;
     if (!psychologistId) {
       return res.status(401).json({ error: "Unauthorized" });
     }
@@ -89,7 +118,7 @@ export const listSessions = async (
   next: NextFunction,
 ) => {
   try {
-    const psychologistId = (req as any).user?.id;
+    const psychologistId = req.user?.id;
     if (!psychologistId) {
       return res.status(401).json({ error: "Unauthorized" });
     }
@@ -109,7 +138,7 @@ export const getSession = async (
 ) => {
   try {
     const { id } = req.params;
-    const psychologistId = (req as any).user?.id;
+    const psychologistId = req.user?.id;
     const session = await SessionService.getSessionById(id);
 
     if (!session) {
@@ -132,10 +161,19 @@ export const updateSessionStatus = async (
   next: NextFunction,
 ) => {
   try {
-    const { id } = req.params;
-    const { status } = req.body;
+    const psychologistId = req.user?.id;
+    if (!psychologistId) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
 
-    const updatedSession = await SessionService.updateSessionStatus(id, status);
+    const { id } = req.params;
+    const { status } = updateSessionStatusSchema.parse(req.body);
+
+    const updatedSession = await SessionService.updateSessionStatus(
+      id,
+      psychologistId,
+      status,
+    );
     res.json(updatedSession);
   } catch (error) {
     next(error);
