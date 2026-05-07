@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { authService } from "../services/api";
 
 interface FormData {
@@ -151,9 +151,9 @@ export const Register: React.FC = () => {
 
         <p className="text-center text-sm text-gray-600 mt-4">
           Já tem conta?{" "}
-          <a href="/login" className="text-blue-600 hover:underline">
+          <Link to="/login" className="text-blue-600 hover:underline">
             Entrar
-          </a>
+          </Link>
         </p>
       </div>
     </div>

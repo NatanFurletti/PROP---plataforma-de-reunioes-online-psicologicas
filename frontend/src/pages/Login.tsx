@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { authService } from "../services/api";
 import { useAuthStore } from "../contexts/useSessionStore";
 
@@ -64,9 +64,9 @@ export const Login: React.FC = () => {
 
         <p className="text-center text-sm text-gray-600 mt-4">
           Não tem conta?{" "}
-          <a href="/register" className="text-blue-600 hover:underline">
+          <Link to="/register" className="text-blue-600 hover:underline">
             Registre-se
-          </a>
+          </Link>
         </p>
       </div>
     </div>
