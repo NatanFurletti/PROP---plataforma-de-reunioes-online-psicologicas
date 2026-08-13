@@ -15,16 +15,17 @@ export const JoinSession: React.FC = () => {
   const { token } = useParams<{ token: string }>();
   const navigate = useNavigate();
 
-  const [pageState, setPageState] = useState<PageState>("loading");
+  // Sem token na URL o link é invalido desde o primeiro render
+  const [pageState, setPageState] = useState<PageState>(
+    token ? "loading" : "invalid",
+  );
   const [sessionData, setSessionData] = useState<SessionData | null>(null);
   const [patientName, setPatientName] = useState("");
   const [nameError, setNameError] = useState("");
 
   useEffect(() => {
-    if (!token) {
-      setPageState("invalid");
-      return;
-    }
+    // Sem token não há o que validar — o estado inicial já cobre esse caso
+    if (!token) return;
 
     sessionService
       .validateSessionToken(token)

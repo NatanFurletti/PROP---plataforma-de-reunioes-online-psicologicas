@@ -193,7 +193,7 @@ export const validateSessionToken = async (
       sessionId: session.id,
       scheduledAt: session.scheduledAt,
       durationMinutes: session.durationMinutes,
-      psychologistName: (session as any).psychologist?.name ?? "",
+      psychologistName: session.psychologist?.name ?? "",
     });
   } catch (error) {
     next(error);

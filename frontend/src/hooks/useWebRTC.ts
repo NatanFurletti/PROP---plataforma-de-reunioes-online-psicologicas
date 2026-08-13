@@ -80,6 +80,12 @@ export const useWebRTC = ({
     }
   }, []);
 
+  // Auto-referência estável: rebuildPeerConnection precisa recriar a conexão
+  // de dentro do próprio callback que a define.
+  const createPeerConnectionRef = useRef<
+    ((stream: MediaStream) => RTCPeerConnection) | null
+  >(null);
+
   // Criar e configurar RTCPeerConnection
   const createPeerConnection = useCallback(
     (stream: MediaStream): RTCPeerConnection => {
@@ -142,7 +148,9 @@ export const useWebRTC = ({
       // Reconstrução completa: usado quando ICE restart não resolveu.
       const rebuildPeerConnection = () => {
         if (!localStreamRef.current) return;
-        const newPc = createPeerConnection(localStreamRef.current);
+        const factory = createPeerConnectionRef.current;
+        if (!factory) return;
+        const newPc = factory(localStreamRef.current);
         peerConnectionRef.current?.close();
         peerConnectionRef.current = newPc;
         remoteDescriptionSetRef.current = false;
@@ -207,6 +215,11 @@ export const useWebRTC = ({
     },
     [sessionId, role, accessToken],
   );
+
+  // Mantém o ref apontando para a versão mais recente do factory
+  useEffect(() => {
+    createPeerConnectionRef.current = createPeerConnection;
+  }, [createPeerConnection]);
 
   // Encerrar chamada e limpar recursos
   const endCall = useCallback(() => {

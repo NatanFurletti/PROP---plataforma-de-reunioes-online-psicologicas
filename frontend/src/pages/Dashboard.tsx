@@ -65,6 +65,9 @@ export const Dashboard: React.FC = () => {
   }, []);
 
   useEffect(() => {
+    // Busca inicial das sessões ao montar. O setState acontece dentro da
+    // promise, não sincronamente no corpo do efeito.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void fetchSessions();
   }, [fetchSessions]);
 

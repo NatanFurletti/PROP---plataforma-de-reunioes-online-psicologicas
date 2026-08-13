@@ -19,7 +19,7 @@ export const Login: React.FC = () => {
       const response = await authService.login(formData);
       login(response.data.psychologist);
       navigate("/dashboard");
-    } catch (err) {
+    } catch {
       setError("Falha ao fazer login");
     } finally {
       setLoading(false);
