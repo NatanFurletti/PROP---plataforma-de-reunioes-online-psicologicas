@@ -2,8 +2,6 @@ import { io, Socket } from "socket.io-client";
 
 const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || "http://localhost:3333";
 
-let socketInstance: Socket | null = null;
-
 export interface SocketAuth {
   sessionId: string;
   role: "host" | "guest";
@@ -11,15 +9,34 @@ export interface SocketAuth {
   accessToken?: string;
 }
 
+let socketInstance: Socket | null = null;
+// Auth do socket ativo, para decidir entre reutilizar e recriar
+let currentAuth: SocketAuth | null = null;
+
+function sameAuth(a: SocketAuth | null, b: SocketAuth): boolean {
+  return (
+    a !== null &&
+    a.sessionId === b.sessionId &&
+    a.role === b.role &&
+    a.accessToken === b.accessToken
+  );
+}
+
 // Inicializa a conexão Socket.IO com o handshake de autenticação.
-// Cada chamada com `auth` diferente fecha o socket anterior e cria um novo,
-// para garantir que o servidor sempre receba os dados corretos no handshake.
+// Reutiliza o socket existente quando o `auth` é equivalente — chamadas
+// repetidas (ex: a cada candidato ICE) nao podem derrubar a sinalizacao.
+// Só recria quando o handshake muda de fato.
 export const initializeSocket = (auth: SocketAuth): Socket => {
+  if (socketInstance && sameAuth(currentAuth, auth)) {
+    return socketInstance;
+  }
+
   if (socketInstance) {
     socketInstance.close();
     socketInstance = null;
   }
 
+  currentAuth = { ...auth };
   socketInstance = io(SOCKET_URL, {
     withCredentials: true,
     auth,
@@ -51,4 +68,5 @@ export const closeSocket = (): void => {
     socketInstance.close();
     socketInstance = null;
   }
+  currentAuth = null;
 };
