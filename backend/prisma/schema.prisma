@@ -18,11 +18,35 @@ model Psychologist {
   crp       String?   // Registro no Conselho Regional de Psicologia
   // Incrementado a cada logout / troca de senha. JWTs com versão antiga ficam inválidos.
   tokenVersion Int    @default(0)
+  emailVerifiedAt DateTime?
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
   sessions  Session[]
+  tokens    VerificationToken[]
 
   @@map("psychologists")
+}
+
+// Tokens de uso único para verificação de e-mail e redefinição de senha.
+// Guardamos apenas o hash — o valor em claro só existe no link enviado.
+model VerificationToken {
+  id             String    @id @default(uuid())
+  psychologistId String
+  psychologist   Psychologist @relation(fields: [psychologistId], references: [id], onDelete: Cascade)
+  tokenHash      String    @unique
+  type           TokenType
+  expiresAt      DateTime
+  usedAt         DateTime?
+  createdAt      DateTime  @default(now())
+
+  @@index([psychologistId])
+  @@index([expiresAt])
+  @@map("verification_tokens")
+}
+
+enum TokenType {
+  EMAIL_VERIFICATION
+  PASSWORD_RESET
 }
 
 model Session {
