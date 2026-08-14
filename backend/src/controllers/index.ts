@@ -6,6 +6,9 @@ import {
   loginSchema,
   createSessionSchema,
   updateSessionStatusSchema,
+  rescheduleSessionSchema,
+  forgotPasswordSchema,
+  resetPasswordSchema,
 } from "../services/index";
 import { AppError } from "../utils/AppError";
 
@@ -175,6 +178,69 @@ export const updateSessionStatus = async (
       status,
     );
     res.json(updatedSession);
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const verifyEmail = async (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    const { token } = req.params;
+    const result = await AuthService.verifyEmail(token);
+    res.json(result);
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const forgotPassword = async (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    const { email } = forgotPasswordSchema.parse(req.body);
+    const result = await AuthService.requestPasswordReset(email);
+    res.json(result);
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const resetPassword = async (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    const { token, password } = resetPasswordSchema.parse(req.body);
+    const result = await AuthService.resetPassword(token, password);
+    res.json(result);
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const rescheduleSession = async (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    if (!req.user) {
+      throw new AppError("Unauthorized", 401);
+    }
+    const validatedData = rescheduleSessionSchema.parse(req.body);
+    const session = await SessionService.rescheduleSession(
+      req.params.id,
+      req.user.id,
+      validatedData,
+    );
+    res.json(session);
   } catch (error) {
     next(error);
   }

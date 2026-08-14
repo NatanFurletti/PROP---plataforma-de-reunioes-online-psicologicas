@@ -26,6 +26,9 @@ const joinLimiter = rateLimit({
 // Public routes
 router.post("/auth/register", authLimiter, controllers.registerPsychologist);
 router.post("/auth/login", authLimiter, controllers.loginPsychologist);
+router.get("/auth/verify-email/:token", joinLimiter, controllers.verifyEmail);
+router.post("/auth/forgot-password", authLimiter, controllers.forgotPassword);
+router.post("/auth/reset-password", authLimiter, controllers.resetPassword);
 router.get(
   "/sessions/join/:token",
   joinLimiter,
@@ -42,6 +45,11 @@ router.patch(
   "/sessions/:id/status",
   authMiddleware,
   controllers.updateSessionStatus,
+);
+router.patch(
+  "/sessions/:id/reschedule",
+  authMiddleware,
+  controllers.rescheduleSession,
 );
 
 export default router;

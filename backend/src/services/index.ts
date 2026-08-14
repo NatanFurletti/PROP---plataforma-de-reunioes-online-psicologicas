@@ -5,6 +5,9 @@ import { z } from "zod";
 import { AppError } from "../utils/AppError";
 import { prisma } from "../prismaClient";
 import { env } from "../config/env";
+import { logger } from "../config/logger";
+import { TokenService } from "./token";
+import { EmailService } from "./email";
 
 const JWT_SECRET = env.JWT_SECRET;
 const JWT_EXPIRES_IN = env.JWT_EXPIRES_IN;
@@ -25,6 +28,20 @@ export const loginSchema = z.object({
 export const createSessionSchema = z.object({
   scheduledAt: z.string().datetime(),
   durationMinutes: z.number().int().min(15).max(480),
+});
+
+export const rescheduleSessionSchema = z.object({
+  scheduledAt: z.string().datetime(),
+  durationMinutes: z.number().int().min(15).max(480).optional(),
+});
+
+export const forgotPasswordSchema = z.object({
+  email: z.string().email(),
+});
+
+export const resetPasswordSchema = z.object({
+  token: z.string().min(1),
+  password: z.string().min(8),
 });
 
 export const updateSessionStatusSchema = z.object({
@@ -54,11 +71,87 @@ export class AuthService {
       },
     });
 
+    // Envio de verificação não pode derrubar o cadastro: a conta já existe
+    // e o psicólogo pode pedir um novo link depois.
+    try {
+      const token = await TokenService.issue(
+        psychologist.id,
+        "EMAIL_VERIFICATION",
+      );
+      await EmailService.sendVerificationEmail(psychologist.email, token);
+    } catch (err) {
+      logger.error(
+        { err, psychologistId: psychologist.id },
+        "[auth] Failed to send verification email",
+      );
+    }
+
     return {
       id: psychologist.id,
       email: psychologist.email,
       name: psychologist.name,
     };
+  }
+
+  // Confirma o e-mail a partir do token enviado por link.
+  static async verifyEmail(token: string) {
+    const { psychologistId } = await TokenService.consume(
+      token,
+      "EMAIL_VERIFICATION",
+    );
+
+    await prisma.psychologist.update({
+      where: { id: psychologistId },
+      data: { emailVerifiedAt: new Date() },
+    });
+
+    return { verified: true };
+  }
+
+  // Inicia a recuperação de senha. Resposta é sempre a mesma, exista ou
+  // não a conta — caso contrário o endpoint vira um oráculo de e-mails.
+  static async requestPasswordReset(email: string) {
+    const psychologist = await prisma.psychologist.findUnique({
+      where: { email },
+    });
+
+    if (psychologist) {
+      try {
+        // Só o link mais recente deve valer
+        await TokenService.invalidatePending(psychologist.id, "PASSWORD_RESET");
+        const token = await TokenService.issue(
+          psychologist.id,
+          "PASSWORD_RESET",
+        );
+        await EmailService.sendPasswordResetEmail(psychologist.email, token);
+      } catch (err) {
+        logger.error(
+          { err, psychologistId: psychologist.id },
+          "[auth] Failed to send password reset email",
+        );
+      }
+    }
+
+    return { message: "If the account exists, an email has been sent" };
+  }
+
+  // Conclui a redefinição: troca o hash e revoga as sessões ativas.
+  static async resetPassword(token: string, newPassword: string) {
+    const { psychologistId } = await TokenService.consume(
+      token,
+      "PASSWORD_RESET",
+    );
+
+    const passwordHash = await bcryptjs.hash(newPassword, 10);
+
+    // Incrementar tokenVersion invalida os JWTs emitidos antes da troca:
+    // quem tiver roubado a senha antiga perde o acesso.
+    await prisma.psychologist.update({
+      where: { id: psychologistId },
+      data: { passwordHash, tokenVersion: { increment: 1 } },
+    });
+
+    return { message: "Password updated" };
   }
 
   static async loginPsychologist(data: z.infer<typeof loginSchema>) {
@@ -149,7 +242,12 @@ export class AuthService {
   static async getById(id: string) {
     const psychologist = await prisma.psychologist.findUnique({
       where: { id },
-      select: { id: true, email: true, name: true },
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        emailVerifiedAt: true,
+      },
     });
     if (!psychologist) {
       throw new AppError("Not found", 404);
@@ -192,6 +290,42 @@ export class SessionService {
     return prisma.session.findMany({
       where: { psychologistId },
       orderBy: { scheduledAt: "desc" },
+    });
+  }
+
+  // Reagenda uma sessão. Só faz sentido antes de ela começar.
+  static async rescheduleSession(
+    sessionId: string,
+    psychologistId: string,
+    data: z.infer<typeof rescheduleSessionSchema>,
+  ) {
+    const session = await prisma.session.findUnique({
+      where: { id: sessionId },
+      select: { id: true, psychologistId: true, status: true },
+    });
+    if (!session) {
+      throw new AppError("Session not found", 404);
+    }
+    if (session.psychologistId !== psychologistId) {
+      throw new AppError("Forbidden", 403);
+    }
+    if (session.status !== "SCHEDULED") {
+      throw new AppError("Only scheduled sessions can be rescheduled", 409);
+    }
+
+    const scheduledAt = new Date(data.scheduledAt);
+    if (scheduledAt.getTime() <= Date.now()) {
+      throw new AppError("scheduledAt must be in the future", 400);
+    }
+
+    return prisma.session.update({
+      where: { id: sessionId },
+      data: {
+        scheduledAt,
+        ...(data.durationMinutes !== undefined && {
+          durationMinutes: data.durationMinutes,
+        }),
+      },
     });
   }
 
