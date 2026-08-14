@@ -8,6 +8,9 @@ import { Dashboard } from "./pages/Dashboard";
 import { VideoCall } from "./pages/VideoCall";
 import { JoinSession } from "./pages/JoinSession";
 import { SessionEnded } from "./pages/SessionEnded";
+import { VerifyEmail } from "./pages/VerifyEmail";
+import { ForgotPassword } from "./pages/ForgotPassword";
+import { ResetPassword } from "./pages/ResetPassword";
 
 const PrivateRoute = ({ children }: { children: React.ReactNode }) => {
   const { isAuthenticated, bootstrapped } = useAuthStore();
@@ -56,6 +59,9 @@ export function App() {
       <Routes>
         <Route path="/login" element={<Login />} />
         <Route path="/register" element={<Register />} />
+        <Route path="/verify-email/:token" element={<VerifyEmail />} />
+        <Route path="/forgot-password" element={<ForgotPassword />} />
+        <Route path="/reset-password/:token" element={<ResetPassword />} />
         <Route path="/join/:token" element={<JoinSession />} />
         <Route path="/session-ended" element={<SessionEnded />} />
         <Route path="/dashboard" element={<PrivateRoute><Dashboard /></PrivateRoute>} />

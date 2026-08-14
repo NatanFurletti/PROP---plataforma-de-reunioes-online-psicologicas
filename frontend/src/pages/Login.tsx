@@ -63,6 +63,12 @@ export const Login: React.FC = () => {
         </form>
 
         <p className="text-center text-sm text-gray-600 mt-4">
+          <Link to="/forgot-password" className="text-blue-600 hover:underline">
+            Esqueci minha senha
+          </Link>
+        </p>
+
+        <p className="text-center text-sm text-gray-600 mt-2">
           Não tem conta?{" "}
           <Link to="/register" className="text-blue-600 hover:underline">
             Registre-se

@@ -213,8 +213,25 @@ model Psychologist {
   passwordHash  String
   crp           String?   // Registro no Conselho Regional de Psicologia
   tokenVersion  Int       @default(0) // incrementada no logout para revogar JWTs
+  emailVerifiedAt DateTime?           // null enquanto o e-mail não for confirmado
   createdAt     DateTime  @default(now())
   sessions      Session[]
+  tokens        VerificationToken[]
+}
+
+model VerificationToken {
+  id             String    @id @default(uuid())
+  psychologistId String
+  tokenHash      String    @unique  // SHA-256; o token em claro nunca é persistido
+  type           TokenType
+  expiresAt      DateTime
+  usedAt         DateTime?           // uso único
+  createdAt      DateTime  @default(now())
+}
+
+enum TokenType {
+  EMAIL_VERIFICATION
+  PASSWORD_RESET
 }
 
 model Session {
@@ -246,11 +263,27 @@ enum SessionStatus {
 | `POST` | `/auth/login` | Login | ❌ |
 | `GET`  | `/auth/me` | Retorna o psicólogo autenticado | ✅ |
 | `POST` | `/auth/logout` | Logout (incrementa tokenVersion) | ✅ |
+| `GET` | `/auth/verify-email/:token` | Confirma e-mail via link | ❌ |
+| `POST` | `/auth/forgot-password` | Solicita link de redefinição | ❌ |
+| `POST` | `/auth/reset-password` | Redefine a senha com o token | ❌ |
 | `GET` | `/sessions` | Listar sessões do psicólogo | ✅ |
 | `POST` | `/sessions` | Criar nova sessão | ✅ |
 | `GET` | `/sessions/:id` | Detalhes de uma sessão | ✅ |
-| `PATCH` | `/sessions/:id/status` | Atualizar status da sessão | ✅ |
+| `PATCH` | `/sessions/:id/status` | Atualizar status (inclui cancelar) | ✅ |
+| `PATCH` | `/sessions/:id/reschedule` | Reagendar sessão | ✅ |
 | `GET` | `/sessions/join/:token` | Validar token do paciente | ❌ |
+
+**Tokens de e-mail (`VerificationToken`):** apenas o hash SHA-256 é
+persistido — o valor em claro só existe no link enviado. Uso único
+(`usedAt`), com expiração de 24h para verificação e 1h para redefinição
+de senha. `forgot-password` responde igual exista ou não a conta, para não
+virar um oráculo de e-mails cadastrados. Redefinir a senha incrementa
+`tokenVersion`, revogando as sessões ativas.
+
+> Envio de e-mail passa por `EmailService` (`services/email.ts`). Em
+> desenvolvimento o driver padrão apenas registra o link no log; para
+> produção, implementar `EmailDriver` com SMTP/Resend/SES e injetar via
+> `setEmailDriver`.
 
 ---
 

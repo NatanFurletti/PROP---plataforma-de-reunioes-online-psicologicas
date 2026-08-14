@@ -34,6 +34,11 @@ export const authService = {
     api.post("/auth/login", data),
   logout: () => api.post("/auth/logout"),
   me: () => api.get("/auth/me"),
+  verifyEmail: (token: string) => api.get(`/auth/verify-email/${token}`),
+  forgotPassword: (email: string) =>
+    api.post("/auth/forgot-password", { email }),
+  resetPassword: (token: string, password: string) =>
+    api.post("/auth/reset-password", { token, password }),
 };
 
 export const sessionService = {
@@ -43,6 +48,12 @@ export const sessionService = {
   getSession: (id: string) => api.get(`/sessions/${id}`),
   updateSessionStatus: (id: string, status: string) =>
     api.patch(`/sessions/${id}/status`, { status }),
+  cancelSession: (id: string) =>
+    api.patch(`/sessions/${id}/status`, { status: "CANCELLED" }),
+  rescheduleSession: (
+    id: string,
+    data: { scheduledAt: string; durationMinutes?: number },
+  ) => api.patch(`/sessions/${id}/reschedule`, data),
   validateSessionToken: (token: string) => api.get(`/sessions/join/${token}`),
 };
 
