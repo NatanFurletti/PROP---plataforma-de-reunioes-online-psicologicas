@@ -96,7 +96,7 @@ export function installWebRTCMocks(): void {
 
 export function stubGetUserMedia(
   impl: () => Promise<MediaStream>,
-): Mock<[], Promise<MediaStream>> {
+): Mock<() => Promise<MediaStream>> {
   const getUserMedia = vi.fn(impl);
   vi.stubGlobal("navigator", {
     ...globalThis.navigator,
