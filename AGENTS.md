@@ -144,6 +144,20 @@ Psicólogo (Host)              Servidor (Signaling)           Paciente (Guest)
 - Limitar salas a **exatamente 2 participantes** (psicólogo + paciente)
 - Emitir evento `session-end` ao encerrar — ambos os lados devem limpar os streams
 
+**Salas e ciclo de vida:**
+- O estado das salas vive em um `Map` em memória do processo. Isso limita o
+  backend a **uma única instância** — para escalar horizontalmente é preciso
+  o `@socket.io/redis-adapter` e mover esse estado para o Redis.
+- Sala sem participantes por 5 minutos é encerrada por um varredor
+  periódico, que marca a sessão como `COMPLETED`. A janela existe para
+  tolerar reconexão; sem ela, uma queda dos dois lados deixaria a sessão
+  presa em `IN_PROGRESS`.
+
+**TURN/STUN:** o `docker-compose` sobe um `coturn` local. Sem TURN, pares
+atrás de NAT simétrico não conseguem estabelecer a conexão P2P. Em
+produção, usar credenciais efêmeras (`use-auth-secret`) em vez do usuário
+fixo — o segredo do frontend vai para o bundle.
+
 **Autenticação no Socket.IO (obrigatória):**
 - Middleware `io.use(...)` valida o handshake antes do `connection`.
 - Cliente envia `auth: { sessionId, role, accessToken? }`.

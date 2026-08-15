@@ -21,10 +21,21 @@ services:
       timeout: 5s
       retries: 5
 
+  # Servidor TURN/STUN — necessário quando os pares estão atrás de NAT
+  # simétrico, caso em que a conexão P2P direta não se estabelece.
+  coturn:
+    image: coturn/coturn:4.6-alpine
+    container_name: psiconnect-coturn
+    network_mode: host
+    volumes:
+      - ./coturn/turnserver.conf:/etc/coturn/turnserver.conf:ro
+    command: -c /etc/coturn/turnserver.conf
+    restart: unless-stopped
+
   # Backend API
   backend:
     build:
-      context: ./backend
+      context: ../backend
       dockerfile: Dockerfile
     container_name: psiconnect-backend
     environment:
@@ -34,13 +45,16 @@ services:
       PORT: 3333
       NODE_ENV: development
       CLIENT_URL: http://localhost:5173
+      TURN_URL: ${TURN_URL:-turn:localhost:3478}
+      TURN_USERNAME: ${TURN_USERNAME:-psiconnect}
+      TURN_CREDENTIAL: ${TURN_CREDENTIAL:-psiconnect-turn-dev}
     ports:
       - "3333:3333"
     depends_on:
       postgres:
         condition: service_healthy
     volumes:
-      - ./backend/src:/app/src
+      - ../backend/src:/app/src
     networks:
       - psiconnect-network
     command: npm run dev
@@ -48,17 +62,20 @@ services:
   # Frontend (opcional - para desenvolvimento)
   frontend:
     build:
-      context: ./frontend
+      context: ../frontend
       dockerfile: Dockerfile
     container_name: psiconnect-frontend
     environment:
       VITE_API_URL: http://localhost:3333
       VITE_SOCKET_URL: http://localhost:3333
+      VITE_TURN_URL: ${TURN_URL:-turn:localhost:3478}
+      VITE_TURN_USERNAME: ${TURN_USERNAME:-psiconnect}
+      VITE_TURN_CREDENTIAL: ${TURN_CREDENTIAL:-psiconnect-turn-dev}
     ports:
       - "5173:5173"
     volumes:
-      - ./frontend/src:/app/src
-      - ./frontend/index.html:/app/index.html
+      - ../frontend/src:/app/src
+      - ../frontend/index.html:/app/index.html
     networks:
       - psiconnect-network
     command: npm run dev
