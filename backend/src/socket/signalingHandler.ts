@@ -26,7 +26,16 @@ interface ParticipantInfo {
 // Estado de uma sala de sinalização
 interface RoomState {
   participants: Map<string, ParticipantInfo>; // key: socketId
+  // Momento em que a sala ficou sem nenhum participante. null enquanto
+  // houver alguém conectado.
+  emptySince: number | null;
 }
+
+// Uma sala sem ninguém conectado por este tempo é encerrada e a sessão
+// marcada como COMPLETED — evita sessões presas em IN_PROGRESS quando
+// ambos os lados caem sem encerrar.
+export const IDLE_ROOM_TIMEOUT_MS = 5 * 60 * 1000;
+const IDLE_SWEEP_INTERVAL_MS = 60 * 1000;
 
 // Dados validados anexados ao socket.data após o handshake
 interface SocketAuth {
@@ -45,8 +54,19 @@ function setAuth(socket: Socket, auth: SocketAuth): void {
   (socket.data as { auth?: SocketAuth }).auth = auth;
 }
 
-// Mapa global de salas ativas: sessionId → RoomState
+// Mapa global de salas ativas: sessionId → RoomState.
+//
+// LIMITAÇÃO: estado em memória do processo. O backend só pode rodar em
+// uma instância — com duas, os pares de uma sessão podem cair em
+// processos diferentes e nunca trocar sinalização. Para escalar
+// horizontalmente é preciso o adapter Redis do Socket.IO
+// (@socket.io/redis-adapter) e mover este Map para o Redis.
 const rooms = new Map<string, RoomState>();
+
+// Estado global entre testes — sem isso um caso contamina o seguinte.
+export function __resetRooms(): void {
+  rooms.clear();
+}
 
 // Retorna o socketId do outro participante da sala, se existir
 function getOtherParticipant(
@@ -80,10 +100,53 @@ function getJwtFromCookies(rawCookieHeader: string | undefined): string | null {
   }
 }
 
+// Encerra salas abandonadas: marca a sessão como COMPLETED e libera o Map.
+// Exportada para permitir teste determinístico, sem esperar o intervalo.
+export async function sweepIdleRooms(
+  prisma: PrismaClient,
+  now: number = Date.now(),
+): Promise<string[]> {
+  const swept: string[] = [];
+
+  for (const [sessionId, room] of rooms) {
+    if (
+      room.participants.size === 0 &&
+      room.emptySince !== null &&
+      now - room.emptySince >= IDLE_ROOM_TIMEOUT_MS
+    ) {
+      rooms.delete(sessionId);
+      swept.push(sessionId);
+
+      try {
+        // updateMany: só encerra se ainda estiver em andamento
+        await prisma.session.updateMany({
+          where: { id: sessionId, status: "IN_PROGRESS" },
+          data: { status: "COMPLETED", endedAt: new Date() },
+        });
+      } catch (err) {
+        logger.error(
+          { err, sessionId },
+          "[signaling] Failed to complete idle session",
+        );
+      }
+    }
+  }
+
+  return swept;
+}
+
 export function registerSignalingHandlers(
   io: Server,
   prisma: PrismaClient,
 ): void {
+  // Varredura periódica de salas abandonadas. unref() para não segurar o
+  // processo aberto quando não houver mais nada rodando.
+  const sweeper = setInterval(() => {
+    void sweepIdleRooms(prisma);
+  }, IDLE_SWEEP_INTERVAL_MS);
+  sweeper.unref?.();
+
+  io.on("close", () => clearInterval(sweeper));
   // Middleware de autenticação: valida sessionId/role/credenciais antes do `connection`
   io.use(async (socket, next) => {
     try {
@@ -171,7 +234,7 @@ export function registerSignalingHandlers(
 
       // Criar sala se ainda não existir
       if (!existing) {
-        rooms.set(sessionId, { participants: new Map() });
+        rooms.set(sessionId, { participants: new Map(), emptySince: null });
       }
 
       const room = rooms.get(sessionId)!;
@@ -179,6 +242,7 @@ export function registerSignalingHandlers(
       // Adicionar socket à sala Socket.IO e ao Map interno
       socket.join(sessionId);
       room.participants.set(socket.id, { socketId: socket.id, role });
+      room.emptySince = null;
 
       // Quando o host entra, marcar a sessão como IN_PROGRESS (idempotente)
       if (role === "host") {
@@ -296,7 +360,7 @@ export function registerSignalingHandlers(
       const entry = findRoomBySocket(socket.id);
       if (!entry) return;
 
-      const [sessionId, room] = entry;
+      const [, room] = entry;
 
       // Remover o socket desconectado do Map
       room.participants.delete(socket.id);
@@ -307,9 +371,10 @@ export function registerSignalingHandlers(
         io.to(otherId).emit("user-left");
       }
 
-      // Se a sala ficou vazia, remover do Map
+      // Sala vazia não é removida na hora: o participante pode estar
+      // reconectando. O varredor de inatividade encerra depois do timeout.
       if (room.participants.size === 0) {
-        rooms.delete(sessionId);
+        room.emptySince = Date.now();
       }
     });
   });
