@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
-import { prisma } from "../prismaClient";
-import { AppError } from "../utils/AppError";
+import { prisma } from "../prismaClient.js";
+import { AppError } from "../utils/AppError.js";
 
 export type TokenType = "EMAIL_VERIFICATION" | "PASSWORD_RESET";
 

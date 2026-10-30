@@ -1,5 +1,5 @@
-import { logger } from "../config/logger";
-import { env } from "../config/env";
+import { logger } from "../config/logger.js";
+import { env } from "../config/env.js";
 
 export interface EmailMessage {
   to: string;

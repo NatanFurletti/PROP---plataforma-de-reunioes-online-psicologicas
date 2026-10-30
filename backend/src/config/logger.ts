@@ -1,5 +1,5 @@
-import pino from "pino";
-import { env } from "./env";
+import { pino } from "pino";
+import { env } from "./env.js";
 
 // Logger estruturado.
 // Em produção: JSON sem colorização, ideal para coletores (ELK, Loki, etc.).
