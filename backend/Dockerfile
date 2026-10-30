@@ -1,25 +1,33 @@
-# Backend
-FROM node:20-alpine AS backend-builder
-
+# Prisma precisa de OpenSSL na imagem alpine
+FROM node:20-alpine AS base
+RUN apk add --no-cache openssl
 WORKDIR /app
 
+# Dependências completas (inclui devDependencies como tsx e typescript)
+FROM base AS deps
 COPY package*.json ./
-RUN npm ci
+COPY prisma ./prisma
+RUN npm ci && npx prisma generate
 
+# Desenvolvimento: usado pelo docker-compose, com src montado como volume
+FROM deps AS dev
 COPY . .
-RUN npm run build
-
-# Backend Runtime
-FROM node:20-alpine
-
-WORKDIR /app
-
-COPY --from=backend-builder /app/package*.json ./
-RUN npm ci --only=production
-
-COPY --from=backend-builder /app/dist ./dist
-COPY --from=backend-builder /app/prisma ./prisma
-
 EXPOSE 3333
+CMD ["sh", "-c", "npx prisma migrate deploy && npm run dev"]
 
-CMD ["node", "dist/index.js"]
+# Build de produção
+FROM deps AS build
+COPY . .
+RUN npm run build && npm prune --omit=dev
+
+# Runtime de produção: só dist + dependências de produção.
+# O client gerado do Prisma (node_modules/.prisma) sobrevive ao prune.
+FROM base AS runtime
+ENV NODE_ENV=production
+COPY --from=build /app/package*.json ./
+COPY --from=build /app/node_modules ./node_modules
+COPY --from=build /app/dist ./dist
+COPY --from=build /app/prisma ./prisma
+EXPOSE 3333
+USER node
+CMD ["sh", "-c", "npx prisma migrate deploy && node dist/index.js"]

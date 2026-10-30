@@ -264,6 +264,29 @@ describe("signaling — ocupação da sala", () => {
     expect(await joined).toEqual({ role: "guest" });
   });
 
+  // Fluxo da sala de espera: o paciente chega antes do psicólogo.
+  // Sem este aviso o host nunca cria a offer e a chamada não conecta.
+  it("notifica o host do guest que já aguardava na sala", async () => {
+    const guest = await connectAndJoin({ role: "guest", accessToken: ACCESS_TOKEN });
+    const guestNotified = waitFor<{ role: string }>(guest, "user-joined");
+
+    const host = makeClient({ role: "host", jwtCookie: hostJwt() });
+    await tryConnect(host);
+    const hostNotified = waitFor<{ role: string }>(host, "user-joined");
+    host.emit("join-room");
+
+    expect(await hostNotified).toEqual({ role: "guest" });
+    expect(await guestNotified).toEqual({ role: "host" });
+  });
+
+  it("não emite user-joined para quem entra numa sala vazia", async () => {
+    const host = makeClient({ role: "host", jwtCookie: hostJwt() });
+    await tryConnect(host);
+    const notified = waitFor(host, "user-joined");
+    host.emit("join-room");
+    expect(await notified).toBeNull();
+  });
+
   it("marca a sessão como IN_PROGRESS quando o host entra", async () => {
     await connectAndJoin({ role: "host", jwtCookie: hostJwt() });
     // updateMany é assíncrono dentro do handler — aguardar propagação

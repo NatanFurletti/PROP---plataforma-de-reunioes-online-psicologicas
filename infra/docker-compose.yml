@@ -37,6 +37,8 @@ services:
     build:
       context: ../backend
       dockerfile: Dockerfile
+      # Estágio com devDependencies (tsx); aplica as migrations ao subir
+      target: dev
     container_name: psiconnect-backend
     environment:
       DATABASE_URL: postgresql://${DB_USER:-psiconnect}:${DB_PASSWORD:-psiconnect123}@postgres:5432/${DB_NAME:-psiconnect}
@@ -57,13 +59,13 @@ services:
       - ../backend/src:/app/src
     networks:
       - psiconnect-network
-    command: npm run dev
 
   # Frontend (opcional - para desenvolvimento)
   frontend:
     build:
       context: ../frontend
       dockerfile: Dockerfile
+      target: dev
     container_name: psiconnect-frontend
     environment:
       VITE_API_URL: http://localhost:3333
@@ -78,7 +80,6 @@ services:
       - ../frontend/index.html:/app/index.html
     networks:
       - psiconnect-network
-    command: npm run dev
 
 volumes:
   postgres_data:

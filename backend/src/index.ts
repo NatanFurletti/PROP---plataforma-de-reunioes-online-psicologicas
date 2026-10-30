@@ -6,11 +6,11 @@ import { pinoHttp } from "pino-http";
 import { createServer } from "http";
 import { Server as SocketIOServer } from "socket.io";
 import { ZodError } from "zod";
-import router from "./routes/index";
-import { registerSignalingHandlers } from "./socket/signalingHandler";
-import { prisma } from "./prismaClient";
-import { env } from "./config/env";
-import { logger } from "./config/logger";
+import router from "./routes/index.js";
+import { registerSignalingHandlers } from "./socket/signalingHandler.js";
+import { prisma } from "./prismaClient.js";
+import { env } from "./config/env.js";
+import { logger } from "./config/logger.js";
 
 const app = express();
 const httpServer = createServer(app);

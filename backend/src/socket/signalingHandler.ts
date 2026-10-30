@@ -1,8 +1,8 @@
 import { Server, Socket } from "socket.io";
 import { PrismaClient } from "@prisma/client";
 import cookie from "cookie";
-import { AuthService } from "../services/index";
-import { logger } from "../config/logger";
+import { AuthService } from "../services/index.js";
+import { logger } from "../config/logger.js";
 
 // Subconjunto dos tipos WebRTC necessários para sinalização (não disponíveis no Node.js)
 interface RTCSessionDescriptionInit {
@@ -259,10 +259,15 @@ export function registerSignalingHandlers(
         }
       }
 
-      // Notificar o outro participante (se já estiver na sala)
+      // Avisar os dois lados: quem já estava e quem acabou de entrar.
+      // Só o host cria a offer, então ele precisa saber do guest em
+      // qualquer ordem de entrada — inclusive quando o paciente já
+      // estava aguardando antes de o psicólogo entrar.
       const otherId = getOtherParticipant(room, socket.id);
       if (otherId) {
+        const other = room.participants.get(otherId)!;
         io.to(otherId).emit("user-joined", { role });
+        socket.emit("user-joined", { role: other.role });
       }
     });
 

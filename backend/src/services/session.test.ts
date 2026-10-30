@@ -157,3 +157,29 @@ describe("SessionService.validateAccessToken", () => {
     expect(result.id).toBe("s1");
   });
 });
+
+describe("SessionService — dados do psicólogo expostos", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  // O include define o que vai na resposta de GET /sessions/:id.
+  // Incluir o registro inteiro vazaria passwordHash e tokenVersion.
+  it("getSessionById inclui só id e nome do psicólogo", async () => {
+    prismaMock.session.findUnique.mockResolvedValue(null);
+    await SessionService.getSessionById("s1");
+    expect(prismaMock.session.findUnique).toHaveBeenCalledWith({
+      where: { id: "s1" },
+      include: { psychologist: { select: { id: true, name: true } } },
+    });
+  });
+
+  it("validateAccessToken inclui só id e nome do psicólogo", async () => {
+    prismaMock.session.findUnique.mockResolvedValue(null);
+    await expect(SessionService.validateAccessToken("t")).rejects.toThrow();
+    expect(prismaMock.session.findUnique).toHaveBeenCalledWith({
+      where: { accessToken: "t" },
+      include: { psychologist: { select: { id: true, name: true } } },
+    });
+  });
+});

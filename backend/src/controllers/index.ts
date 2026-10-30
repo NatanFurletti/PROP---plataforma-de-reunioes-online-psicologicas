@@ -9,8 +9,8 @@ import {
   rescheduleSessionSchema,
   forgotPasswordSchema,
   resetPasswordSchema,
-} from "../services/index";
-import { AppError } from "../utils/AppError";
+} from "../services/index.js";
+import { AppError } from "../utils/AppError.js";
 
 export const registerPsychologist = async (
   req: Request,
