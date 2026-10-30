@@ -2,12 +2,12 @@ import bcryptjs from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import { AppError } from "../utils/AppError";
-import { prisma } from "../prismaClient";
-import { env } from "../config/env";
-import { logger } from "../config/logger";
-import { TokenService } from "./token";
-import { EmailService } from "./email";
+import { AppError } from "../utils/AppError.js";
+import { prisma } from "../prismaClient.js";
+import { env } from "../config/env.js";
+import { logger } from "../config/logger.js";
+import { TokenService } from "./token.js";
+import { EmailService } from "./email.js";
 
 const JWT_SECRET = env.JWT_SECRET;
 const JWT_EXPIRES_IN = env.JWT_EXPIRES_IN;
@@ -282,7 +282,8 @@ export class SessionService {
   static async getSessionById(sessionId: string) {
     return prisma.session.findUnique({
       where: { id: sessionId },
-      include: { psychologist: true },
+      // Nunca incluir o registro inteiro: traria passwordHash e tokenVersion
+      include: { psychologist: { select: { id: true, name: true } } },
     });
   }
 
@@ -365,7 +366,8 @@ export class SessionService {
   static async validateAccessToken(token: string) {
     const session = await prisma.session.findUnique({
       where: { accessToken: token },
-      include: { psychologist: true },
+      // Nunca incluir o registro inteiro: traria passwordHash e tokenVersion
+      include: { psychologist: { select: { id: true, name: true } } },
     });
 
     if (!session) {
