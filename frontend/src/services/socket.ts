@@ -7,6 +7,10 @@ export interface SocketAuth {
   role: "host" | "guest";
   // Necessário apenas para guest (host autentica via cookie JWT)
   accessToken?: string;
+  // Guest: nome exibido ao psicólogo na tela de aprovação
+  name?: string;
+  // Guest: chave recebida ao ser aprovado, para voltar sem nova aprovação
+  admissionKey?: string;
 }
 
 let socketInstance: Socket | null = null;
@@ -18,7 +22,8 @@ function sameAuth(a: SocketAuth | null, b: SocketAuth): boolean {
     a !== null &&
     a.sessionId === b.sessionId &&
     a.role === b.role &&
-    a.accessToken === b.accessToken
+    a.accessToken === b.accessToken &&
+    a.name === b.name
   );
 }
 

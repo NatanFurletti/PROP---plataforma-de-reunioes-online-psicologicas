@@ -115,7 +115,12 @@ export const Dashboard: React.FC = () => {
 
     setFormLoading(true);
     try {
-      await sessionService.createSession({ scheduledAt, durationMinutes });
+      // O input datetime-local não tem fuso ("2026-10-31T03:40"); o backend
+      // exige ISO 8601 completo, então convertemos do horário local para UTC.
+      await sessionService.createSession({
+        scheduledAt: new Date(scheduledAt).toISOString(),
+        durationMinutes,
+      });
       setShowForm(false);
       setScheduledAt("");
       setDurationMinutes(50);

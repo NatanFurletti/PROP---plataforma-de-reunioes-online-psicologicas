@@ -1,262 +1,323 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { Socket } from "socket.io-client";
 import { initializeSocket, closeSocket } from "../services/socket";
 
-interface UseWebRTCOptions {
-  sessionId: string;
-  role: "host" | "guest";
-  // Necessário apenas para guest (host autentica via cookie JWT)
-  accessToken?: string;
-  onSessionEnded?: () => void;
-  onRoomFull?: () => void;
-  onError?: (error: Error) => void;
-}
+export type Role = "host" | "guest";
 
-type ConnectionState =
+export type ConnectionState =
   | "idle"
   | "connecting"
   | "connected"
   | "reconnecting"
   | "failed";
 
+// pending: ainda sem resposta do servidor; waiting: na sala de espera;
+// admitted: na chamada; denied: o psicólogo recusou a entrada.
+export type AdmissionStatus = "pending" | "waiting" | "admitted" | "denied";
+
+export interface RemoteParticipant {
+  peerId: string;
+  role: Role;
+  name: string;
+  stream: MediaStream | null;
+  connectionState: ConnectionState;
+}
+
+export interface WaitingGuest {
+  guestId: string;
+  name: string;
+}
+
+interface UseWebRTCOptions {
+  sessionId: string;
+  role: Role;
+  // Guest: token do link da sessão (host autentica via cookie JWT)
+  accessToken?: string;
+  // Guest: nome mostrado ao psicólogo para aprovação
+  name?: string;
+  // Guest: chave de reentrada de uma aprovação anterior
+  admissionKey?: string;
+  onAdmitted?: (admissionKey: string) => void;
+  onAdmissionDenied?: () => void;
+  onSessionEnded?: () => void;
+  onRoomFull?: () => void;
+  onError?: (error: Error) => void;
+}
+
 interface UseWebRTCReturn {
   localStream: MediaStream | null;
-  remoteStream: MediaStream | null;
+  participants: RemoteParticipant[];
+  waitingGuests: WaitingGuest[];
+  admissionStatus: AdmissionStatus;
   isMicMuted: boolean;
   isCameraOff: boolean;
   connectionState: ConnectionState;
   toggleMic: () => void;
   toggleCamera: () => void;
+  admitGuest: (guestId: string) => void;
+  denyGuest: (guestId: string) => void;
   endCall: () => void;
+}
+
+// Uma RTCPeerConnection por participante remoto (malha P2P)
+interface PeerEntry {
+  pc: RTCPeerConnection;
+  // Candidatos ICE recebidos antes de setRemoteDescription
+  pendingCandidates: RTCIceCandidateInit[];
+  remoteDescriptionSet: boolean;
+  // Quem criou a offer é quem reinicia o ICE em caso de falha
+  isOfferer: boolean;
+  reconnectAttempts: number;
+}
+
+const MAX_RECONNECT_ATTEMPTS = 3;
+
+function buildIceServers(): RTCIceServer[] {
+  const iceServers: RTCIceServer[] = [
+    { urls: "stun:stun.l.google.com:19302" },
+    { urls: "stun:stun1.l.google.com:19302" },
+  ];
+  const turnUrl = import.meta.env.VITE_TURN_URL as string | undefined;
+  if (turnUrl) {
+    iceServers.push({
+      urls: turnUrl,
+      username: import.meta.env.VITE_TURN_USERNAME as string,
+      credential: import.meta.env.VITE_TURN_CREDENTIAL as string,
+    });
+  }
+  return iceServers;
+}
+
+function toError(err: unknown, fallback: string): Error {
+  return err instanceof Error ? err : new Error(fallback);
 }
 
 export const useWebRTC = ({
   sessionId,
   role,
   accessToken,
+  name,
+  admissionKey,
+  onAdmitted,
+  onAdmissionDenied,
   onSessionEnded,
   onRoomFull,
   onError,
 }: UseWebRTCOptions): UseWebRTCReturn => {
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
-  const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
+  const [participants, setParticipants] = useState<RemoteParticipant[]>([]);
+  const [waitingGuests, setWaitingGuests] = useState<WaitingGuest[]>([]);
+  const [admissionStatus, setAdmissionStatus] = useState<AdmissionStatus>(
+    role === "host" ? "admitted" : "pending",
+  );
   const [isMicMuted, setIsMicMuted] = useState(false);
   const [isCameraOff, setIsCameraOff] = useState(false);
-  const [connectionState, setConnectionState] =
-    useState<ConnectionState>("idle");
+  // Estado da mídia local; o estado da chamada é derivado dos participantes
+  const [mediaState, setMediaState] = useState<"idle" | "ready" | "failed">(
+    "idle",
+  );
 
-  const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
+  const socketRef = useRef<Socket | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
-  const reconnectAttemptsRef = useRef(0);
-  // Buffer de candidatos ICE recebidos antes de setRemoteDescription
-  const pendingIceCandidatesRef = useRef<RTCIceCandidateInit[]>([]);
-  // Flag para saber se já podemos aplicar candidatos ICE diretamente
-  const remoteDescriptionSetRef = useRef(false);
+  const peersRef = useRef(new Map<string, PeerEntry>());
+  const admissionKeyRef = useRef(admissionKey);
 
-  // Guardar referências estáveis para callbacks para evitar re-registros
-  const onSessionEndedRef = useRef(onSessionEnded);
-  const onRoomFullRef = useRef(onRoomFull);
-  const onErrorRef = useRef(onError);
+  // Referências estáveis para callbacks, evitando re-registro de handlers
+  const callbacksRef = useRef({
+    onAdmitted,
+    onAdmissionDenied,
+    onSessionEnded,
+    onRoomFull,
+    onError,
+  });
+  useEffect(() => {
+    callbacksRef.current = {
+      onAdmitted,
+      onAdmissionDenied,
+      onSessionEnded,
+      onRoomFull,
+      onError,
+    };
+  }, [onAdmitted, onAdmissionDenied, onSessionEnded, onRoomFull, onError]);
 
-  useEffect(() => {
-    onSessionEndedRef.current = onSessionEnded;
-  }, [onSessionEnded]);
-  useEffect(() => {
-    onRoomFullRef.current = onRoomFull;
-  }, [onRoomFull]);
-  useEffect(() => {
-    onErrorRef.current = onError;
-  }, [onError]);
+  const reportError = useCallback((err: unknown, fallback: string) => {
+    callbacksRef.current.onError?.(toError(err, fallback));
+  }, []);
 
-  // Aplica candidatos ICE bufferizados após setRemoteDescription
-  const flushPendingCandidates = useCallback(async (pc: RTCPeerConnection) => {
-    const pending = pendingIceCandidatesRef.current;
-    pendingIceCandidatesRef.current = [];
+  // Insere ou atualiza os dados de um participante remoto
+  const upsertParticipant = useCallback(
+    (peerId: string, patch: Partial<RemoteParticipant>) => {
+      setParticipants((prev) => {
+        const index = prev.findIndex((p) => p.peerId === peerId);
+        if (index === -1) {
+          return [
+            ...prev,
+            {
+              peerId,
+              role: "guest",
+              name: "Participante",
+              stream: null,
+              connectionState: "connecting",
+              ...patch,
+            },
+          ];
+        }
+        const next = [...prev];
+        next[index] = { ...next[index], ...patch };
+        return next;
+      });
+    },
+    [],
+  );
+
+  const closePeer = useCallback((peerId: string) => {
+    peersRef.current.get(peerId)?.pc.close();
+    peersRef.current.delete(peerId);
+    setParticipants((prev) => prev.filter((p) => p.peerId !== peerId));
+  }, []);
+
+  const closeAllPeers = useCallback(() => {
+    for (const entry of peersRef.current.values()) entry.pc.close();
+    peersRef.current.clear();
+    setParticipants([]);
+  }, []);
+
+  const sendOffer = useCallback(
+    async (peerId: string, iceRestart = false) => {
+      const entry = peersRef.current.get(peerId);
+      const socket = socketRef.current;
+      if (!entry || !socket) return;
+      try {
+        const offer = await entry.pc.createOffer(
+          iceRestart ? { iceRestart: true } : undefined,
+        );
+        await entry.pc.setLocalDescription(offer);
+        socket.emit("offer", { to: peerId, offer: entry.pc.localDescription });
+      } catch (err) {
+        reportError(err, "Failed to create offer");
+      }
+    },
+    [reportError],
+  );
+
+  const flushPendingCandidates = useCallback(async (entry: PeerEntry) => {
+    const pending = entry.pendingCandidates;
+    entry.pendingCandidates = [];
     for (const candidate of pending) {
       try {
-        await pc.addIceCandidate(candidate);
+        await entry.pc.addIceCandidate(candidate);
       } catch (err) {
         console.warn("Failed to add buffered ICE candidate:", err);
       }
     }
   }, []);
 
-  // Auto-referência estável: rebuildPeerConnection precisa recriar a conexão
-  // de dentro do próprio callback que a define.
-  const createPeerConnectionRef = useRef<
-    ((stream: MediaStream) => RTCPeerConnection) | null
-  >(null);
+  // Cria a RTCPeerConnection de um par remoto
+  const createPeer = useCallback(
+    (peerId: string, isOfferer: boolean): PeerEntry => {
+      const pc = new RTCPeerConnection({ iceServers: buildIceServers() });
+      const entry: PeerEntry = {
+        pc,
+        pendingCandidates: [],
+        remoteDescriptionSet: false,
+        isOfferer,
+        reconnectAttempts: 0,
+      };
+      peersRef.current.set(peerId, entry);
 
-  // Criar e configurar RTCPeerConnection
-  const createPeerConnection = useCallback(
-    (stream: MediaStream): RTCPeerConnection => {
-      const iceServers: RTCIceServer[] = [
-        { urls: "stun:stun.l.google.com:19302" },
-        { urls: "stun:stun1.l.google.com:19302" },
-      ];
+      const stream = localStreamRef.current;
+      stream?.getTracks().forEach((track) => pc.addTrack(track, stream));
 
-      const turnUrl = import.meta.env.VITE_TURN_URL as string | undefined;
-      if (turnUrl) {
-        iceServers.push({
-          urls: turnUrl,
-          username: import.meta.env.VITE_TURN_USERNAME as string,
-          credential: import.meta.env.VITE_TURN_CREDENTIAL as string,
-        });
-      }
-
-      const pc = new RTCPeerConnection({ iceServers });
-
-      // Adicionar tracks locais
-      stream.getTracks().forEach((track) => {
-        pc.addTrack(track, stream);
-      });
-
-      // Receber stream remoto
       pc.ontrack = (event) => {
-        setRemoteStream(event.streams[0]);
+        upsertParticipant(peerId, { stream: event.streams[0] ?? null });
       };
 
-      // Enviar candidatos ICE ao servidor de sinalização
       pc.onicecandidate = (event) => {
         if (event.candidate) {
-          // Tentar usar socket existente; ignorar se não inicializado ainda
-          try {
-            const socket = initializeSocket({ sessionId, role, accessToken });
-            // initializeSocket recria caso auth tenha mudado; aqui só queremos pegar o atual
-            socket.emit("ice-candidate", { candidate: event.candidate });
-          } catch {
-            // socket pode não estar pronto — candidato perdido é tolerável
-          }
+          socketRef.current?.emit("ice-candidate", {
+            to: peerId,
+            candidate: event.candidate,
+          });
         }
       };
 
-      // ICE restart leve: tentado quando a conexão "tropeça" mas o PC ainda existe.
-      // Apenas o host reinicia ICE — o servidor entrega a nova offer ao guest.
-      const tryIceRestart = async () => {
-        if (role !== "host") return;
-        try {
-          const offer = await pc.createOffer({ iceRestart: true });
-          await pc.setLocalDescription(offer);
-          const socket = initializeSocket({ sessionId, role, accessToken });
-          socket.emit("offer", { offer: pc.localDescription });
-        } catch (err) {
-          onErrorRef.current?.(
-            err instanceof Error ? err : new Error("ICE restart failed"),
-          );
-        }
-      };
-
-      // Reconstrução completa: usado quando ICE restart não resolveu.
-      const rebuildPeerConnection = () => {
-        if (!localStreamRef.current) return;
-        const factory = createPeerConnectionRef.current;
-        if (!factory) return;
-        const newPc = factory(localStreamRef.current);
-        peerConnectionRef.current?.close();
-        peerConnectionRef.current = newPc;
-        remoteDescriptionSetRef.current = false;
-        pendingIceCandidatesRef.current = [];
-        // Reentrar na sala — servidor reemitirá user-joined
-        const socket = initializeSocket({ sessionId, role, accessToken });
-        socket.emit("join-room");
-      };
-
-      // Estado ICE: detecta quebras transitórias antes de connectionState
       pc.oniceconnectionstatechange = () => {
         if (pc.iceConnectionState === "disconnected") {
-          // Pode se recuperar sozinho — apenas sinalizar reconnecting
-          setConnectionState("reconnecting");
+          upsertParticipant(peerId, { connectionState: "reconnecting" });
         }
       };
 
-      // Monitorar estado de conexão e aplicar estratégia em camadas
       pc.onconnectionstatechange = () => {
+        // Conexão já descartada (par saiu ou foi substituído)
+        if (peersRef.current.get(peerId) !== entry) return;
+
         switch (pc.connectionState) {
           case "connecting":
-            setConnectionState("connecting");
+            upsertParticipant(peerId, { connectionState: "connecting" });
             break;
           case "connected":
-            reconnectAttemptsRef.current = 0;
-            setConnectionState("connected");
+            entry.reconnectAttempts = 0;
+            upsertParticipant(peerId, { connectionState: "connected" });
             break;
           case "disconnected":
-            setConnectionState("reconnecting");
+            upsertParticipant(peerId, { connectionState: "reconnecting" });
             break;
           case "failed": {
-            const attempt = reconnectAttemptsRef.current;
-            if (attempt >= 3) {
-              setConnectionState("failed");
-              onErrorRef.current?.(
-                new Error("Connection failed after 3 attempts"),
-              );
+            const attempt = entry.reconnectAttempts;
+            if (attempt >= MAX_RECONNECT_ATTEMPTS) {
+              upsertParticipant(peerId, { connectionState: "failed" });
+              reportError(null, "Connection failed after 3 attempts");
               return;
             }
-            reconnectAttemptsRef.current = attempt + 1;
-            setConnectionState("reconnecting");
-            // Backoff exponencial: 1s, 2s, 4s
-            const delayMs = 1000 * Math.pow(2, attempt);
-            setTimeout(() => {
-              // Primeira tentativa: ICE restart (mantém PC e tracks)
-              // Tentativas seguintes: reconstrução completa
-              if (attempt === 0) {
-                void tryIceRestart();
-              } else {
-                rebuildPeerConnection();
-              }
-            }, delayMs);
+            entry.reconnectAttempts = attempt + 1;
+            upsertParticipant(peerId, { connectionState: "reconnecting" });
+            // Só quem criou a offer reinicia o ICE; o outro lado responde.
+            // Backoff exponencial: 1s, 2s, 4s.
+            if (entry.isOfferer) {
+              setTimeout(() => {
+                if (peersRef.current.get(peerId) === entry) {
+                  void sendOffer(peerId, true);
+                }
+              }, 1000 * Math.pow(2, attempt));
+            }
             break;
           }
-          case "closed":
-            setConnectionState("idle");
-            break;
         }
       };
 
-      return pc;
+      return entry;
     },
-    [sessionId, role, accessToken],
+    [upsertParticipant, reportError, sendOffer],
   );
 
-  // Mantém o ref apontando para a versão mais recente do factory
-  useEffect(() => {
-    createPeerConnectionRef.current = createPeerConnection;
-  }, [createPeerConnection]);
-
-  // Encerrar chamada e limpar recursos
+  // Encerrar chamada e liberar recursos. Para o host, encerra a sessão
+  // para todos; para o paciente, apenas sai.
   const endCall = useCallback(() => {
-    // Parar todos os tracks de mídia
     localStreamRef.current?.getTracks().forEach((t) => t.stop());
+    localStreamRef.current = null;
 
-    // Fechar peer connection
-    peerConnectionRef.current?.close();
-    peerConnectionRef.current = null;
+    for (const entry of peersRef.current.values()) entry.pc.close();
+    peersRef.current.clear();
 
-    // Emitir encerramento de sessão se for o host (servidor revalida o role)
     if (role === "host") {
-      try {
-        const socket = initializeSocket({ sessionId, role, accessToken });
-        socket.emit("session-end");
-      } catch {
-        // socket pode já estar fechado
-      }
+      // O servidor revalida o role. O Socket.IO envia o que está no buffer
+      // antes de fechar, então o close logo em seguida não perde o evento.
+      socketRef.current?.emit("session-end");
     }
-
-    // Fechar conexão socket por completo
+    socketRef.current = null;
     closeSocket();
 
-    // Resetar estados
     setLocalStream(null);
-    setRemoteStream(null);
-    localStreamRef.current = null;
-    remoteDescriptionSetRef.current = false;
-    pendingIceCandidatesRef.current = [];
-    setConnectionState("idle");
-  }, [sessionId, role, accessToken]);
+    setParticipants([]);
+    setWaitingGuests([]);
+    setMediaState("idle");
+  }, [role]);
 
   useEffect(() => {
     let cancelled = false;
 
     const setup = async () => {
-      // 1. Solicitar permissão de câmera e microfone
+      // 1. Câmera e microfone
       let stream: MediaStream;
       try {
         stream = await navigator.mediaDevices.getUserMedia({
@@ -265,10 +326,8 @@ export const useWebRTC = ({
         });
       } catch (err) {
         if (cancelled) return;
-        setConnectionState("failed");
-        onErrorRef.current?.(
-          err instanceof Error ? err : new Error("Failed to access media devices"),
-        );
+        setMediaState("failed");
+        reportError(err, "Failed to access media devices");
         return;
       }
 
@@ -279,159 +338,239 @@ export const useWebRTC = ({
 
       localStreamRef.current = stream;
       setLocalStream(stream);
-      setConnectionState("connecting");
+      setMediaState("ready");
 
-      // 2. Criar RTCPeerConnection e adicionar tracks
-      const pc = createPeerConnection(stream);
-      peerConnectionRef.current = pc;
+      // 2. Sinalização autenticada
+      const socket = initializeSocket({
+        sessionId,
+        role,
+        accessToken,
+        name,
+        admissionKey: admissionKeyRef.current,
+      });
+      socketRef.current = socket;
+      let hasConnected = false;
 
-      // 3. Inicializar socket com o handshake autenticado
-      const socket = initializeSocket({ sessionId, role, accessToken });
+      const joinRoom = () => {
+        // Reconexão do socket gera um novo id: as conexões antigas não
+        // valem mais e serão renegociadas a partir do novo join.
+        if (hasConnected) {
+          closeAllPeers();
+          if (role === "guest") setAdmissionStatus("pending");
+        }
+        hasConnected = true;
+        socket.emit("join-room");
+      };
+
+      socket.on("connect", () => {
+        if (!cancelled) joinRoom();
+      });
+      if (socket.connected) joinRoom();
 
       socket.on("connect_error", (err: Error) => {
-        if (cancelled) return;
-        onErrorRef.current?.(err);
+        if (!cancelled) reportError(err, "Connection error");
       });
 
-      // Após conectar, entrar na sala
-      socket.on("connect", () => {
-        socket.emit("join-room");
-      });
-      // Caso a conexão já esteja estabelecida (reuso ou rápido), garantir o emit
-      if (socket.connected) socket.emit("join-room");
-
-      // Sala cheia
       socket.on("room-full", () => {
-        if (cancelled) return;
-        onRoomFullRef.current?.();
+        if (!cancelled) callbacksRef.current.onRoomFull?.();
       });
 
-      // Host cria offer quando o guest entra
-      socket.on("user-joined", async () => {
+      // --- Sala de espera (guest) ---
+      socket.on("waiting-for-approval", () => {
+        if (!cancelled) setAdmissionStatus("waiting");
+      });
+
+      socket.on("admitted", ({ admissionKey: key }: { admissionKey: string }) => {
         if (cancelled) return;
-        if (role === "host") {
-          try {
-            const offer = await pc.createOffer();
-            await pc.setLocalDescription(offer);
-            socket.emit("offer", { offer: pc.localDescription });
-          } catch (err) {
-            onErrorRef.current?.(
-              err instanceof Error ? err : new Error("Failed to create offer"),
-            );
-          }
+        admissionKeyRef.current = key;
+        // Reconexões automáticas do socket passam a levar a chave
+        const withAuth = socket as Socket & { auth?: Record<string, unknown> };
+        if (withAuth.auth && typeof withAuth.auth === "object") {
+          withAuth.auth = { ...withAuth.auth, admissionKey: key };
+        }
+        setAdmissionStatus("admitted");
+        callbacksRef.current.onAdmitted?.(key);
+      });
+
+      socket.on("admission-denied", () => {
+        if (cancelled) return;
+        setAdmissionStatus("denied");
+        callbacksRef.current.onAdmissionDenied?.();
+      });
+
+      // --- Aprovação (host) ---
+      socket.on("waiting-list", ({ guests }: { guests: WaitingGuest[] }) => {
+        if (!cancelled) setWaitingGuests(guests);
+      });
+
+      socket.on("guest-waiting", (guest: WaitingGuest) => {
+        if (cancelled) return;
+        setWaitingGuests((prev) =>
+          prev.some((g) => g.guestId === guest.guestId) ? prev : [...prev, guest],
+        );
+      });
+
+      socket.on("admission-error", () => {
+        if (!cancelled) {
+          reportError(null, "A sala atingiu o limite de participantes.");
         }
       });
 
-      // Guest recebe offer e responde com answer
+      // --- Negociação em malha ---
+      // Quem acaba de entrar recebe a lista de quem já está e cria as offers
+      socket.on(
+        "room-peers",
+        ({ peers }: { peers: { peerId: string; role: Role; name: string }[] }) => {
+          if (cancelled) return;
+          setAdmissionStatus("admitted");
+          for (const peer of peers) {
+            upsertParticipant(peer.peerId, {
+              role: peer.role,
+              name: peer.name,
+              connectionState: "connecting",
+            });
+            createPeer(peer.peerId, true);
+            void sendOffer(peer.peerId);
+          }
+        },
+      );
+
+      // Os demais só registram quem chegou e aguardam a offer
+      socket.on(
+        "user-joined",
+        ({ peerId, role: peerRole, name: peerName }: { peerId: string; role: Role; name: string }) => {
+          if (cancelled) return;
+          upsertParticipant(peerId, {
+            role: peerRole,
+            name: peerName,
+            connectionState: "connecting",
+          });
+        },
+      );
+
       socket.on(
         "offer",
-        async ({ offer }: { offer: RTCSessionDescriptionInit }) => {
+        async ({ from, offer }: { from: string; offer: RTCSessionDescriptionInit }) => {
           if (cancelled) return;
-          if (role !== "guest") return;
+          let entry = peersRef.current.get(from);
+          if (!entry) {
+            upsertParticipant(from, {});
+            entry = createPeer(from, false);
+          }
           try {
-            await pc.setRemoteDescription(offer);
-            remoteDescriptionSetRef.current = true;
-            await flushPendingCandidates(pc);
-            const answer = await pc.createAnswer();
-            await pc.setLocalDescription(answer);
-            socket.emit("answer", { answer: pc.localDescription });
+            await entry.pc.setRemoteDescription(offer);
+            entry.remoteDescriptionSet = true;
+            await flushPendingCandidates(entry);
+            const answer = await entry.pc.createAnswer();
+            await entry.pc.setLocalDescription(answer);
+            socket.emit("answer", { to: from, answer: entry.pc.localDescription });
           } catch (err) {
-            onErrorRef.current?.(
-              err instanceof Error ? err : new Error("Failed to create answer"),
-            );
+            reportError(err, "Failed to create answer");
           }
         },
       );
 
-      // Host recebe answer do guest
       socket.on(
         "answer",
-        async ({ answer }: { answer: RTCSessionDescriptionInit }) => {
+        async ({ from, answer }: { from: string; answer: RTCSessionDescriptionInit }) => {
           if (cancelled) return;
+          const entry = peersRef.current.get(from);
+          if (!entry) return;
           try {
-            await pc.setRemoteDescription(answer);
-            remoteDescriptionSetRef.current = true;
-            await flushPendingCandidates(pc);
+            await entry.pc.setRemoteDescription(answer);
+            entry.remoteDescriptionSet = true;
+            await flushPendingCandidates(entry);
           } catch (err) {
-            onErrorRef.current?.(
-              err instanceof Error
-                ? err
-                : new Error("Failed to set remote description"),
-            );
+            reportError(err, "Failed to set remote description");
           }
         },
       );
 
-      // Adicionar candidatos ICE recebidos — bufferizar se ainda não houver remoteDescription
       socket.on(
         "ice-candidate",
-        async ({ candidate }: { candidate: RTCIceCandidateInit }) => {
+        async ({ from, candidate }: { from: string; candidate: RTCIceCandidateInit }) => {
           if (cancelled) return;
-          if (!remoteDescriptionSetRef.current) {
-            pendingIceCandidatesRef.current.push(candidate);
+          const entry = peersRef.current.get(from);
+          if (!entry) return;
+          if (!entry.remoteDescriptionSet) {
+            entry.pendingCandidates.push(candidate);
             return;
           }
           try {
-            await pc.addIceCandidate(candidate);
+            await entry.pc.addIceCandidate(candidate);
           } catch (err) {
             console.warn("Failed to add ICE candidate:", err);
           }
         },
       );
 
-      // Sessão encerrada pelo host
-      socket.on("session-ended", () => {
-        if (cancelled) return;
-        onSessionEndedRef.current?.();
+      socket.on("user-left", ({ peerId }: { peerId: string }) => {
+        if (!cancelled) closePeer(peerId);
       });
 
-      // Outro participante saiu (ex: queda) — apenas atualiza UI
-      socket.on("user-left", () => {
-        if (cancelled) return;
-        setRemoteStream(null);
+      socket.on("session-ended", () => {
+        if (!cancelled) callbacksRef.current.onSessionEnded?.();
       });
     };
 
-    setup();
+    void setup();
 
-    // Cleanup ao desmontar
     return () => {
       cancelled = true;
       endCall();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId, role, accessToken]);
+  }, [sessionId, role, accessToken, name]);
 
-  // Alternar microfone
+  const admitGuest = useCallback((guestId: string) => {
+    socketRef.current?.emit("admit-guest", { guestId });
+    setWaitingGuests((prev) => prev.filter((g) => g.guestId !== guestId));
+  }, []);
+
+  const denyGuest = useCallback((guestId: string) => {
+    socketRef.current?.emit("deny-guest", { guestId });
+    setWaitingGuests((prev) => prev.filter((g) => g.guestId !== guestId));
+  }, []);
+
   const toggleMic = useCallback(() => {
-    if (localStreamRef.current) {
-      const audioTrack = localStreamRef.current.getAudioTracks()[0];
-      if (audioTrack) {
-        audioTrack.enabled = !audioTrack.enabled;
-        setIsMicMuted(!audioTrack.enabled);
-      }
+    const audioTrack = localStreamRef.current?.getAudioTracks()[0];
+    if (audioTrack) {
+      audioTrack.enabled = !audioTrack.enabled;
+      setIsMicMuted(!audioTrack.enabled);
     }
   }, []);
 
-  // Alternar câmera
   const toggleCamera = useCallback(() => {
-    if (localStreamRef.current) {
-      const videoTrack = localStreamRef.current.getVideoTracks()[0];
-      if (videoTrack) {
-        videoTrack.enabled = !videoTrack.enabled;
-        setIsCameraOff(!videoTrack.enabled);
-      }
+    const videoTrack = localStreamRef.current?.getVideoTracks()[0];
+    if (videoTrack) {
+      videoTrack.enabled = !videoTrack.enabled;
+      setIsCameraOff(!videoTrack.enabled);
     }
   }, []);
+
+  // Estado geral da chamada, para o indicador visual
+  const connectionState = useMemo<ConnectionState>(() => {
+    if (mediaState === "failed") return "failed";
+    if (mediaState === "idle") return "idle";
+    const states = participants.map((p) => p.connectionState);
+    if (states.includes("reconnecting")) return "reconnecting";
+    if (states.includes("connected")) return "connected";
+    if (states.length > 0 && states.every((s) => s === "failed")) return "failed";
+    return "connecting";
+  }, [mediaState, participants]);
 
   return {
     localStream,
-    remoteStream,
+    participants,
+    waitingGuests,
+    admissionStatus,
     isMicMuted,
     isCameraOff,
     connectionState,
     toggleMic,
     toggleCamera,
+    admitGuest,
+    denyGuest,
     endCall,
   };
 };

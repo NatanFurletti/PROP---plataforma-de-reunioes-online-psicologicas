@@ -38,7 +38,11 @@ const GUEST_OPTS = {
   sessionId: "s1",
   role: "guest" as const,
   accessToken: "tok",
+  name: "Maria",
 };
+
+const HOST_PEER = { peerId: "host-1", role: "host", name: "Psicólogo" };
+const GUEST_PEER = { peerId: "guest-1", role: "guest", name: "Maria" };
 
 beforeEach(() => {
   handlers.clear();
@@ -82,8 +86,9 @@ describe("useWebRTC — inicialização de mídia", () => {
   });
 
   it("adiciona os tracks locais à peer connection", async () => {
-    const { result } = renderHook(() => useWebRTC(HOST_OPTS));
+    const { result } = renderHook(() => useWebRTC(GUEST_OPTS));
     await waitFor(() => expect(result.current.localStream).not.toBeNull());
+    await act(async () => serverEmit("room-peers", { peers: [HOST_PEER] }));
     // 1 track de áudio + 1 de vídeo
     expect(createdPeerConnections[0].addTrack).toHaveBeenCalledTimes(2);
   });
@@ -125,40 +130,126 @@ describe("useWebRTC — controles de mídia", () => {
   });
 });
 
-describe("useWebRTC — negociação", () => {
-  it("host cria offer quando o guest entra", async () => {
+describe("useWebRTC — sala de espera", () => {
+  it("guest começa pendente e host já entra admitido", async () => {
+    const guest = renderHook(() => useWebRTC(GUEST_OPTS));
+    const host = renderHook(() => useWebRTC(HOST_OPTS));
+    expect(guest.result.current.admissionStatus).toBe("pending");
+    expect(host.result.current.admissionStatus).toBe("admitted");
+  });
+
+  it("guest passa para 'waiting' e depois 'admitted' com a chave", async () => {
+    const onAdmitted = vi.fn();
+    const { result } = renderHook(() => useWebRTC({ ...GUEST_OPTS, onAdmitted }));
+    await waitFor(() => expect(result.current.localStream).not.toBeNull());
+
+    await act(async () => serverEmit("waiting-for-approval"));
+    expect(result.current.admissionStatus).toBe("waiting");
+
+    await act(async () => serverEmit("admitted", { admissionKey: "key-1" }));
+    expect(result.current.admissionStatus).toBe("admitted");
+    expect(onAdmitted).toHaveBeenCalledWith("key-1");
+  });
+
+  it("guest recusado vai para 'denied'", async () => {
+    const onAdmissionDenied = vi.fn();
+    const { result } = renderHook(() =>
+      useWebRTC({ ...GUEST_OPTS, onAdmissionDenied }),
+    );
+    await waitFor(() => expect(result.current.localStream).not.toBeNull());
+
+    await act(async () => serverEmit("admission-denied"));
+    expect(result.current.admissionStatus).toBe("denied");
+    expect(onAdmissionDenied).toHaveBeenCalled();
+  });
+
+  it("guest não cria conexão enquanto aguarda", async () => {
+    const { result } = renderHook(() => useWebRTC(GUEST_OPTS));
+    await waitFor(() => expect(result.current.localStream).not.toBeNull());
+    await act(async () => serverEmit("waiting-for-approval"));
+    expect(createdPeerConnections).toHaveLength(0);
+  });
+});
+
+describe("useWebRTC — aprovação pelo host", () => {
+  it("lista pedidos recebidos e atualiza com a lista do servidor", async () => {
     const { result } = renderHook(() => useWebRTC(HOST_OPTS));
     await waitFor(() => expect(result.current.localStream).not.toBeNull());
 
+    await act(async () => serverEmit("guest-waiting", { guestId: "g1", name: "Maria" }));
+    await act(async () => serverEmit("guest-waiting", { guestId: "g1", name: "Maria" }));
+    expect(result.current.waitingGuests).toEqual([{ guestId: "g1", name: "Maria" }]);
+
+    await act(async () => serverEmit("waiting-list", { guests: [] }));
+    expect(result.current.waitingGuests).toEqual([]);
+  });
+
+  it("admitGuest envia admit-guest e tira o pedido da lista", async () => {
+    const { result } = renderHook(() => useWebRTC(HOST_OPTS));
+    await waitFor(() => expect(result.current.localStream).not.toBeNull());
+    await act(async () => serverEmit("guest-waiting", { guestId: "g1", name: "Maria" }));
+
+    act(() => result.current.admitGuest("g1"));
+    expect(socketMock.emit).toHaveBeenCalledWith("admit-guest", { guestId: "g1" });
+    expect(result.current.waitingGuests).toEqual([]);
+  });
+
+  it("denyGuest envia deny-guest", async () => {
+    const { result } = renderHook(() => useWebRTC(HOST_OPTS));
+    await waitFor(() => expect(result.current.localStream).not.toBeNull());
+    await act(async () => serverEmit("guest-waiting", { guestId: "g1", name: "Maria" }));
+
+    act(() => result.current.denyGuest("g1"));
+    expect(socketMock.emit).toHaveBeenCalledWith("deny-guest", { guestId: "g1" });
+  });
+});
+
+describe("useWebRTC — negociação em malha", () => {
+  it("quem entra cria uma offer para cada par já presente", async () => {
+    const { result } = renderHook(() => useWebRTC(GUEST_OPTS));
+    await waitFor(() => expect(result.current.localStream).not.toBeNull());
+
     await act(async () => {
-      serverEmit("user-joined", { role: "guest" });
+      serverEmit("room-peers", {
+        peers: [HOST_PEER, { peerId: "guest-2", role: "guest", name: "João" }],
+      });
     });
 
-    const pc = createdPeerConnections[0];
-    expect(pc.createOffer).toHaveBeenCalled();
+    expect(createdPeerConnections).toHaveLength(2);
     expect(socketMock.emit).toHaveBeenCalledWith(
       "offer",
-      expect.objectContaining({ offer: expect.anything() }),
+      expect.objectContaining({ to: "host-1", offer: expect.anything() }),
     );
+    expect(socketMock.emit).toHaveBeenCalledWith(
+      "offer",
+      expect.objectContaining({ to: "guest-2", offer: expect.anything() }),
+    );
+    expect(result.current.participants.map((p) => p.name)).toEqual([
+      "Psicólogo",
+      "João",
+    ]);
+    expect(result.current.admissionStatus).toBe("admitted");
   });
 
-  it("guest não cria offer ao receber user-joined", async () => {
-    const { result } = renderHook(() => useWebRTC(GUEST_OPTS));
+  it("user-joined só registra o par, sem criar offer", async () => {
+    const { result } = renderHook(() => useWebRTC(HOST_OPTS));
     await waitFor(() => expect(result.current.localStream).not.toBeNull());
 
-    await act(async () => {
-      serverEmit("user-joined", { role: "host" });
-    });
+    await act(async () => serverEmit("user-joined", GUEST_PEER));
 
-    expect(createdPeerConnections[0].createOffer).not.toHaveBeenCalled();
+    expect(createdPeerConnections).toHaveLength(0);
+    expect(result.current.participants).toEqual([
+      expect.objectContaining({ peerId: "guest-1", name: "Maria" }),
+    ]);
   });
 
-  it("guest responde offer com answer", async () => {
-    const { result } = renderHook(() => useWebRTC(GUEST_OPTS));
+  it("responde a offer de um par com answer endereçada a ele", async () => {
+    const { result } = renderHook(() => useWebRTC(HOST_OPTS));
     await waitFor(() => expect(result.current.localStream).not.toBeNull());
 
+    await act(async () => serverEmit("user-joined", GUEST_PEER));
     await act(async () => {
-      serverEmit("offer", { offer: { type: "offer", sdp: "remote-sdp" } });
+      serverEmit("offer", { from: "guest-1", offer: { type: "offer", sdp: "remote" } });
     });
 
     const pc = createdPeerConnections[0];
@@ -166,55 +257,81 @@ describe("useWebRTC — negociação", () => {
     expect(pc.createAnswer).toHaveBeenCalled();
     expect(socketMock.emit).toHaveBeenCalledWith(
       "answer",
-      expect.objectContaining({ answer: expect.anything() }),
+      expect.objectContaining({ to: "guest-1", answer: expect.anything() }),
     );
   });
 
-  it("host aplica a answer recebida", async () => {
-    const { result } = renderHook(() => useWebRTC(HOST_OPTS));
+  it("aplica a answer na conexão do par certo", async () => {
+    const { result } = renderHook(() => useWebRTC(GUEST_OPTS));
     await waitFor(() => expect(result.current.localStream).not.toBeNull());
-
     await act(async () => {
-      serverEmit("answer", { answer: { type: "answer", sdp: "remote-sdp" } });
+      serverEmit("room-peers", {
+        peers: [HOST_PEER, { peerId: "guest-2", role: "guest", name: "João" }],
+      });
     });
 
-    expect(createdPeerConnections[0].setRemoteDescription).toHaveBeenCalled();
+    await act(async () => {
+      serverEmit("answer", { from: "guest-2", answer: { type: "answer", sdp: "a" } });
+    });
+
+    expect(createdPeerConnections[0].setRemoteDescription).not.toHaveBeenCalled();
+    expect(createdPeerConnections[1].setRemoteDescription).toHaveBeenCalled();
   });
 
   it("bufferiza ICE candidates recebidos antes da remote description", async () => {
     const { result } = renderHook(() => useWebRTC(GUEST_OPTS));
     await waitFor(() => expect(result.current.localStream).not.toBeNull());
-
+    await act(async () => serverEmit("room-peers", { peers: [HOST_PEER] }));
     const pc = createdPeerConnections[0];
 
-    // Candidato chega antes de qualquer offer — deve ser bufferizado
     await act(async () => {
-      serverEmit("ice-candidate", { candidate: { candidate: "cand-1" } });
+      serverEmit("ice-candidate", { from: "host-1", candidate: { candidate: "c1" } });
     });
     expect(pc.addIceCandidate).not.toHaveBeenCalled();
 
-    // Após a offer, o buffer é drenado
     await act(async () => {
-      serverEmit("offer", { offer: { type: "offer", sdp: "remote-sdp" } });
+      serverEmit("answer", { from: "host-1", answer: { type: "answer", sdp: "a" } });
     });
-    expect(pc.addIceCandidate).toHaveBeenCalledWith({ candidate: "cand-1" });
+    expect(pc.addIceCandidate).toHaveBeenCalledWith({ candidate: "c1" });
+
+    await act(async () => {
+      serverEmit("ice-candidate", { from: "host-1", candidate: { candidate: "c2" } });
+    });
+    expect(pc.addIceCandidate).toHaveBeenCalledWith({ candidate: "c2" });
   });
 
-  it("aplica ICE candidates diretamente após a remote description", async () => {
+  it("envia ICE candidates locais endereçados ao par", async () => {
     const { result } = renderHook(() => useWebRTC(GUEST_OPTS));
     await waitFor(() => expect(result.current.localStream).not.toBeNull());
+    await act(async () => serverEmit("room-peers", { peers: [HOST_PEER] }));
 
-    await act(async () => {
-      serverEmit("offer", { offer: { type: "offer", sdp: "remote-sdp" } });
+    createdPeerConnections[0].onicecandidate?.({ candidate: { candidate: "local" } });
+    expect(socketMock.emit).toHaveBeenCalledWith("ice-candidate", {
+      to: "host-1",
+      candidate: { candidate: "local" },
     });
+  });
 
-    const pc = createdPeerConnections[0];
-    pc.addIceCandidate.mockClear();
+  it("guarda o stream remoto de cada participante", async () => {
+    const { result } = renderHook(() => useWebRTC(GUEST_OPTS));
+    await waitFor(() => expect(result.current.localStream).not.toBeNull());
+    await act(async () => serverEmit("room-peers", { peers: [HOST_PEER] }));
 
+    const remote = createFakeStream();
     await act(async () => {
-      serverEmit("ice-candidate", { candidate: { candidate: "cand-2" } });
+      createdPeerConnections[0].ontrack?.({ streams: [remote] });
     });
-    expect(pc.addIceCandidate).toHaveBeenCalledWith({ candidate: "cand-2" });
+    expect(result.current.participants[0].stream).toBe(remote);
+  });
+
+  it("remove e fecha a conexão de quem saiu", async () => {
+    const { result } = renderHook(() => useWebRTC(GUEST_OPTS));
+    await waitFor(() => expect(result.current.localStream).not.toBeNull());
+    await act(async () => serverEmit("room-peers", { peers: [HOST_PEER] }));
+
+    await act(async () => serverEmit("user-left", { peerId: "host-1" }));
+    expect(result.current.participants).toEqual([]);
+    expect(createdPeerConnections[0].close).toHaveBeenCalled();
   });
 });
 
@@ -240,39 +357,31 @@ describe("useWebRTC — eventos de sessão", () => {
     await act(async () => serverEmit("room-full", { error: "cheia" }));
     expect(onRoomFull).toHaveBeenCalled();
   });
-
-  it("limpa o stream remoto quando o par sai", async () => {
-    const { result } = renderHook(() => useWebRTC(HOST_OPTS));
-    await waitFor(() => expect(result.current.localStream).not.toBeNull());
-
-    // Simula o track remoto chegando
-    await act(async () => {
-      createdPeerConnections[0].ontrack?.({ streams: [createFakeStream()] });
-    });
-    expect(result.current.remoteStream).not.toBeNull();
-
-    await act(async () => serverEmit("user-left"));
-    expect(result.current.remoteStream).toBeNull();
-  });
 });
 
 describe("useWebRTC — encerramento", () => {
-  it("endCall para os tracks e fecha a peer connection", async () => {
+  it("endCall para os tracks e fecha todas as conexões", async () => {
     const stream = createFakeStream();
     stubGetUserMedia(async () => stream);
 
-    const { result } = renderHook(() => useWebRTC(HOST_OPTS));
+    const { result } = renderHook(() => useWebRTC(GUEST_OPTS));
     await waitFor(() => expect(result.current.localStream).not.toBeNull());
-    const pc = createdPeerConnections[0];
+    await act(async () => {
+      serverEmit("room-peers", {
+        peers: [HOST_PEER, { peerId: "guest-2", role: "guest", name: "João" }],
+      });
+    });
 
     act(() => result.current.endCall());
 
     for (const track of stream.tracks) {
       expect(track.readyState).toBe("ended");
     }
-    expect(pc.close).toHaveBeenCalled();
-    expect(pc.signalingState).toBe("closed");
+    for (const pc of createdPeerConnections) {
+      expect(pc.close).toHaveBeenCalled();
+    }
     expect(result.current.localStream).toBeNull();
+    expect(result.current.participants).toEqual([]);
   });
 
   it("host emite session-end ao encerrar", async () => {
@@ -283,7 +392,7 @@ describe("useWebRTC — encerramento", () => {
     expect(socketMock.emit).toHaveBeenCalledWith("session-end");
   });
 
-  it("guest não emite session-end ao encerrar", async () => {
+  it("guest não emite session-end ao sair", async () => {
     const { result } = renderHook(() => useWebRTC(GUEST_OPTS));
     await waitFor(() => expect(result.current.localStream).not.toBeNull());
 
@@ -306,35 +415,44 @@ describe("useWebRTC — encerramento", () => {
 });
 
 describe("useWebRTC — reconexão", () => {
-  it("marca 'connected' quando a conexão é estabelecida", async () => {
-    const { result } = renderHook(() => useWebRTC(HOST_OPTS));
-    await waitFor(() => expect(result.current.localStream).not.toBeNull());
+  async function guestWithHost() {
+    const onError = vi.fn();
+    const hook = renderHook(() => useWebRTC({ ...GUEST_OPTS, onError }));
+    await vi.waitFor(() => expect(hook.result.current.localStream).not.toBeNull());
+    await act(async () => serverEmit("room-peers", { peers: [HOST_PEER] }));
+    return { ...hook, onError, pc: createdPeerConnections[0] };
+  }
 
-    await act(async () => {
-      createdPeerConnections[0].emitConnectionState("connected");
-    });
+  it("marca 'connected' quando a conexão é estabelecida", async () => {
+    const { result, pc } = await guestWithHost();
+    await act(async () => pc.emitConnectionState("connected"));
     expect(result.current.connectionState).toBe("connected");
+    expect(result.current.participants[0].connectionState).toBe("connected");
   });
 
   it("entra em 'reconnecting' na primeira falha, sem desistir", async () => {
-    const { result } = renderHook(() => useWebRTC(HOST_OPTS));
-    await waitFor(() => expect(result.current.localStream).not.toBeNull());
+    const { result, pc } = await guestWithHost();
+    await act(async () => pc.emitConnectionState("failed"));
+    expect(result.current.connectionState).toBe("reconnecting");
+  });
+
+  it("quem fez a offer reinicia o ICE após uma falha", async () => {
+    vi.useFakeTimers();
+    const { pc } = await guestWithHost();
+    pc.createOffer.mockClear();
 
     await act(async () => {
-      createdPeerConnections[0].emitConnectionState("failed");
+      pc.emitConnectionState("failed");
+      await vi.advanceTimersByTimeAsync(1_000);
     });
-    expect(result.current.connectionState).toBe("reconnecting");
+    expect(pc.createOffer).toHaveBeenCalledWith({ iceRestart: true });
+    vi.useRealTimers();
   });
 
   it("desiste com 'failed' e onError após 3 tentativas", async () => {
     vi.useFakeTimers();
-    const onError = vi.fn();
-    const { result } = renderHook(() => useWebRTC({ ...HOST_OPTS, onError }));
+    const { result, pc, onError } = await guestWithHost();
 
-    await vi.waitFor(() => expect(result.current.localStream).not.toBeNull());
-    const pc = createdPeerConnections[0];
-
-    // 3 falhas consecutivas esgotam as tentativas; a 4ª desiste
     for (let i = 0; i < 4; i++) {
       await act(async () => {
         pc.emitConnectionState("failed");

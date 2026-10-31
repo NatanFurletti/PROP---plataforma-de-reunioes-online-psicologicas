@@ -1,6 +1,12 @@
 import React from "react";
+import { useLocation } from "react-router-dom";
 
 export const SessionEnded: React.FC = () => {
+  // "left": o próprio paciente saiu; sem estado: o psicólogo encerrou
+  const location = useLocation();
+  const leftByChoice =
+    (location.state as { reason?: string } | null)?.reason === "left";
+
   return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-r from-blue-600 to-blue-800">
       <div className="bg-white rounded-lg shadow-lg p-8 w-full max-w-md text-center">
@@ -23,9 +29,13 @@ export const SessionEnded: React.FC = () => {
           </div>
         </div>
 
-        <h1 className="text-2xl font-bold mb-2">Sessão encerrada</h1>
+        <h1 className="text-2xl font-bold mb-2">
+          {leftByChoice ? "Você saiu da sessão" : "Sessão encerrada"}
+        </h1>
         <p className="text-gray-600 mb-2">
-          A sessão foi encerrada pelo psicólogo.
+          {leftByChoice
+            ? "Para voltar, abra novamente o link recebido."
+            : "A sessão foi encerrada pelo psicólogo."}
         </p>
         <p className="text-gray-500 text-sm mb-6">
           Obrigado por participar. Cuide-se!

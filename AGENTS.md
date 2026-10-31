@@ -84,7 +84,8 @@ psiconnect/
 - **Vídeo e áudio bidirecional** via WebRTC peer-to-peer
 - **Controles de sessão:** mutar microfone, ativar/desativar câmera, encerrar chamada
 - **Indicadores visuais:** status de conexão, nível de áudio, câmera ativa
-- **Sala de espera (waiting room):** paciente aguarda até o psicólogo iniciar a sessão
+- **Sala de espera com aprovação:** o paciente informa o nome e aguarda; o psicólogo vê o pedido e admite ou recusa cada entrada
+- **Vários participantes:** até `MAX_ROOM_PARTICIPANTS` pessoas por sala (padrão 6, psicólogo incluso)
 - **Reconexão automática** em caso de queda de conexão
 
 ### Módulo de Agendamento
@@ -121,28 +122,37 @@ psiconnect/
 
 ## 🔄 Fluxo WebRTC — Sinalização
 
-O fluxo de estabelecimento de conexão segue o padrão de **Offer/Answer** via Socket.IO:
+Cada sala tem **um psicólogo (host)** e um ou mais pacientes (guests). A
+chamada é uma **malha P2P**: cada participante tem uma `RTCPeerConnection`
+com cada um dos outros. A sinalização usa **Offer/Answer** via Socket.IO,
+sempre endereçada a um par (`to`) e entregue com o remetente (`from`).
 
 ```
-Psicólogo (Host)              Servidor (Signaling)           Paciente (Guest)
-     |                               |                              |
-     |--- joinRoom(sessionId) ------>|                              |
-     |                               |<--- joinRoom(sessionId) -----|
-     |                               |--- userJoined(guestId) ----->|
-     |--- createOffer() ------------>|                              |
-     |                               |--- offer ------------------>|
-     |                               |<-- answer ------------------|
-     |<-- answer --------------------|                              |
-     |--- ICE candidates ----------->|--- ICE candidates --------->|
-     |                               |                              |
-     |<========== Conexão P2P estabelecida =======================>|
+Paciente (novo)            Servidor (Signaling)         Psicólogo (Host)
+     |--- join-room --------------->|                              |
+     |<-- waiting-for-approval -----|--- guest-waiting(nome) ----->|
+     |                              |<-- admit-guest(guestId) -----|
+     |<-- admitted(admissionKey) ---|                              |
+     |<-- room-peers([pares]) ------|--- user-joined(peer) ------->|
+     |--- offer(to: cada par) ----->|--- offer(from) ------------->|
+     |<-- answer(from) -------------|<-- answer(to) ---------------|
+     |<======= ICE candidates (to/from) =========================>|
+     |<========== Conexão P2P com cada participante ============>|
 ```
 
 **Regras para o código de sinalização:**
-- Usar `socket.to(roomId).emit(...)` para mensagens direcionadas à sala
-- Implementar handlers para: `offer`, `answer`, `ice-candidate`, `user-left`, `session-end`
-- Limitar salas a **exatamente 2 participantes** (psicólogo + paciente)
-- Emitir evento `session-end` ao encerrar — ambos os lados devem limpar os streams
+- Quem acaba de entrar na chamada recebe `room-peers` e **cria a offer para
+  cada par**; os demais só recebem `user-joined` e respondem à offer.
+- `offer`/`answer`/`ice-candidate` só circulam entre participantes
+  **admitidos** da mesma sala — paciente em espera não sinaliza.
+- Somente o host admite/recusa pacientes e encerra a sessão (servidor revalida o role).
+- Um único host por sala. Limite total: `MAX_ROOM_PARTICIPANTS` (padrão 6).
+  A malha P2P não escala bem além disso — acima disso, usar um SFU.
+- Ao ser admitido, o paciente recebe uma `admissionKey` (guardada no
+  `sessionStorage`); com ela, reload ou queda de rede voltam direto à
+  chamada, sem nova aprovação. A chave vale só enquanto a sala existir.
+- `session-ended` vai para todos (inclusive quem aguardava). O cliente que
+  encerra/sai navega por conta própria — não espera resposta do servidor.
 
 **Salas e ciclo de vida:**
 - O estado das salas vive em um `Map` em memória do processo. Isso limita o
@@ -160,7 +170,7 @@ fixo — o segredo do frontend vai para o bundle.
 
 **Autenticação no Socket.IO (obrigatória):**
 - Middleware `io.use(...)` valida o handshake antes do `connection`.
-- Cliente envia `auth: { sessionId, role, accessToken? }`.
+- Cliente envia `auth: { sessionId, role, accessToken?, name?, admissionKey? }` (guest exige `name`, 1–60 caracteres).
 - Host autentica via cookie JWT (mesmo cookie da API). O `psychologistId` decodificado deve bater com o dono da `Session`.
 - Guest autentica via `accessToken` (igual ao da `Session`).
 - Os handlers de socket (`offer`/`answer`/etc.) **leem `sessionId` e `role` de `socket.data.auth`**, nunca do payload do cliente — isso impede que um socket emita para sala que não autenticou.
@@ -305,12 +315,23 @@ virar um oráculo de e-mails cadastrados. Redefinir a senha incrementa
 
 | Evento | Direção | Payload | Descrição |
 |---|---|---|---|
-| `join-room` | Cliente → Servidor | `{ sessionId, role }` | Entrar na sala |
-| `offer` | Cliente → Servidor | `{ sessionId, offer }` | Enviar SDP offer |
-| `answer` | Cliente → Servidor | `{ sessionId, answer }` | Enviar SDP answer |
-| `ice-candidate` | Cliente → Servidor | `{ sessionId, candidate }` | Enviar ICE candidate |
-| `user-joined` | Servidor → Cliente | `{ role }` | Outro participante entrou |
-| `user-left` | Servidor → Cliente | `{}` | Outro participante saiu |
+| `join-room` | Cliente → Servidor | — | Entrar na sala (host direto; guest vai para a espera) |
+| `admit-guest` / `deny-guest` | Host → Servidor | `{ guestId }` | Aprovar ou recusar um paciente |
+| `offer` | Cliente → Servidor | `{ to, offer }` | Enviar SDP offer a um par |
+| `answer` | Cliente → Servidor | `{ to, answer }` | Enviar SDP answer a um par |
+| `ice-candidate` | Cliente → Servidor | `{ to, candidate }` | Enviar ICE candidate a um par |
+| `session-end` | Host → Servidor | — (ack opcional) | Encerrar a sessão para todos |
+| `waiting-for-approval` | Servidor → Guest | `{}` | Paciente entrou na sala de espera |
+| `admitted` | Servidor → Guest | `{ admissionKey }` | Paciente aprovado |
+| `admission-denied` | Servidor → Guest | `{}` | Paciente recusado |
+| `guest-waiting` | Servidor → Host | `{ guestId, name }` | Novo pedido de entrada |
+| `waiting-list` | Servidor → Host | `{ guests: [{ guestId, name }] }` | Lista atual de pedidos |
+| `admission-error` | Servidor → Host | `{ guestId, error }` | Não foi possível admitir (sala cheia) |
+| `room-peers` | Servidor → Cliente | `{ peers: [{ peerId, role, name }] }` | Quem já está na chamada (o recém-chegado cria as offers) |
+| `user-joined` | Servidor → Cliente | `{ peerId, role, name }` | Alguém entrou na chamada |
+| `user-left` | Servidor → Cliente | `{ peerId }` | Alguém saiu da chamada |
+| `offer` / `answer` / `ice-candidate` | Servidor → Cliente | `{ from, ... }` | Sinalização vinda de um par |
+| `room-full` | Servidor → Cliente | `{ error }` | Sala cheia ou host duplicado |
 | `session-ended` | Servidor → Cliente | `{}` | Sessão encerrada pelo host |
 
 ---
@@ -324,13 +345,13 @@ virar um oráculo de e-mails cadastrados. Redefinir a senha incrementa
 - ✅ Usar variáveis de ambiente para credenciais (nunca hardcodar)
 - ✅ Implementar tratamento de erro em todas as operações assíncronas
 - ✅ Fechar streams de mídia (`stream.getTracks().forEach(t => t.stop())`) ao encerrar chamadas
-- ✅ Garantir que a sala de espera impeça o paciente de entrar antes do psicólogo
+- ✅ Garantir que nenhum paciente entre na chamada sem aprovação do psicólogo
 - ✅ Considerar acessibilidade (ARIA labels, foco no teclado) nos componentes de UI
 
 ### O que NÃO FAZER
 - ❌ Não gravar vídeo/áudio sem lógica explícita de consentimento implementada
 - ❌ Não armazenar JWT em `localStorage` ou `sessionStorage`
-- ❌ Não permitir mais de 2 usuários na mesma sala de sessão
+- ❌ Não permitir mais de `MAX_ROOM_PARTICIPANTS` pessoas nem mais de um host na mesma sala
 - ❌ Não expor o ID interno do paciente ou do psicólogo em URLs públicas
 - ❌ Não usar `console.log` com dados sensíveis em produção
 - ❌ Não criar lógica de negócio diretamente em Controllers ou Componentes React
@@ -347,6 +368,7 @@ JWT_SECRET=sua_chave_secreta_aqui
 JWT_EXPIRES_IN=8h
 PORT=3333
 CLIENT_URL=http://localhost:5173
+MAX_ROOM_PARTICIPANTS=6   # psicólogo incluso
 
 # WebRTC / TURN
 TURN_URL=turn:seu-servidor-turn:3478
