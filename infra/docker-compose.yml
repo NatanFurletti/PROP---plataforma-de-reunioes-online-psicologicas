@@ -10,7 +10,8 @@ services:
       POSTGRES_PASSWORD: ${DB_PASSWORD:-psiconnect123}
       POSTGRES_DB: ${DB_NAME:-psiconnect}
     ports:
-      - "5432:5432"
+      # Porta do host configurável: use DB_PORT=5434 se a 5432 já estiver ocupada
+      - "${DB_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     networks:
@@ -70,6 +71,7 @@ services:
     environment:
       VITE_API_URL: http://localhost:3333
       VITE_SOCKET_URL: http://localhost:3333
+      VITE_USE_POLLING: "true"
       VITE_TURN_URL: ${TURN_URL:-turn:localhost:3478}
       VITE_TURN_USERNAME: ${TURN_USERNAME:-psiconnect}
       VITE_TURN_CREDENTIAL: ${TURN_CREDENTIAL:-psiconnect-turn-dev}
