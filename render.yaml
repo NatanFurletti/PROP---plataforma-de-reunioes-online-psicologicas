@@ -1,0 +1,31 @@
+# Blueprint do Render: backend (API + sinalização WebSocket).
+# Render → New → Blueprint → selecionar este repositório.
+services:
+  - type: web
+    name: psiconnect-api
+    runtime: docker
+    plan: free
+    # Mesma região do banco no Neon (AWS us-east-1) para baixa latência
+    region: virginia
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # Connection string do Neon (direta, sem "-pooler"), com sslmode=require
+      - key: DATABASE_URL
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: JWT_EXPIRES_IN
+        value: 8h
+      # URL do frontend na Vercel, ex.: https://psiconnect.vercel.app
+      - key: CLIENT_URL
+        sync: false
+      # Vercel (rewrite) → proxy do Render → app
+      - key: TRUST_PROXY
+        value: "2"
+      - key: MAX_ROOM_PARTICIPANTS
+        value: "6"
