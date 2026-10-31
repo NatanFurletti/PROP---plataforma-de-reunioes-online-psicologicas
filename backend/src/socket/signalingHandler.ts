@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { Server, Socket } from "socket.io";
 import { PrismaClient } from "@prisma/client";
 import cookie from "cookie";
-import { AuthService } from "../services/index.js";
+import { AuthService, SessionService } from "../services/index.js";
 import { logger } from "../config/logger.js";
 import { env } from "../config/env.js";
 
@@ -206,25 +206,37 @@ export function registerSignalingHandlers(
       }
 
       if (role === "host") {
-        // Host autentica via cookie JWT do psicólogo dono da sessão
-        const jwtToken = getJwtFromCookies(socket.handshake.headers.cookie);
-        if (!jwtToken) {
-          return next(new Error("Missing auth cookie"));
+        // Host autentica com o token curto de socket (frontend e backend em
+        // domínios diferentes) ou, no mesmo domínio, com o cookie de login.
+        let psychologistId: string;
+        if (typeof handshake.hostToken === "string") {
+          try {
+            psychologistId = await SessionService.verifyHostSocketToken(
+              handshake.hostToken,
+              sessionId,
+            );
+          } catch {
+            return next(new Error("Invalid auth token"));
+          }
+        } else {
+          const jwtToken = getJwtFromCookies(socket.handshake.headers.cookie);
+          if (!jwtToken) {
+            return next(new Error("Missing auth cookie"));
+          }
+          try {
+            psychologistId = (await AuthService.verifyTokenWithVersion(jwtToken)).id;
+          } catch {
+            return next(new Error("Invalid auth token"));
+          }
         }
-        let decoded: { id: string; email: string };
-        try {
-          decoded = await AuthService.verifyTokenWithVersion(jwtToken);
-        } catch {
-          return next(new Error("Invalid auth token"));
-        }
-        if (decoded.id !== session.psychologistId) {
+        if (psychologistId !== session.psychologistId) {
           return next(new Error("Forbidden: not the session owner"));
         }
         setAuth(socket, {
           sessionId,
           role,
           name: "Psicólogo",
-          psychologistId: decoded.id,
+          psychologistId,
         });
       } else {
         // Guest autentica via accessToken da sessão e precisa se identificar

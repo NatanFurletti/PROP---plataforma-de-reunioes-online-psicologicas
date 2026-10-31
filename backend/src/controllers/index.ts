@@ -246,6 +246,25 @@ export const rescheduleSession = async (
   }
 };
 
+export const issueSocketToken = async (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    if (!req.user) {
+      throw new AppError("Unauthorized", 401);
+    }
+    const token = await SessionService.issueHostSocketToken(
+      req.params.id,
+      req.user.id,
+    );
+    res.json({ token });
+  } catch (error) {
+    next(error);
+  }
+};
+
 export const validateSessionToken = async (
   req: Request,
   res: Response,

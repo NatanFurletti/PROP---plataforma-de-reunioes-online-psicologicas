@@ -207,7 +207,12 @@ export class AuthService {
         id: string;
         email: string;
         v?: number;
+        purpose?: string;
       };
+      // Tokens de propósito específico (ex.: socket do host) não valem como login
+      if (typeof decoded.id !== "string" || decoded.purpose !== undefined) {
+        throw new Error("Invalid token");
+      }
       return decoded;
     } catch {
       throw new Error("Invalid token");
@@ -256,7 +261,82 @@ export class AuthService {
   }
 }
 
+const HOST_SOCKET_PURPOSE = "host-socket";
+const HOST_SOCKET_TOKEN_TTL = "5m";
+
 export class SessionService {
+  // Token curto para o psicólogo autenticar o WebSocket. Necessário quando
+  // frontend e backend estão em domínios diferentes: o cookie de login
+  // pertence ao domínio do frontend e não chega à conexão do socket.
+  // Vale só para uma sessão e é revogado junto com o login (tokenVersion).
+  static async issueHostSocketToken(
+    sessionId: string,
+    psychologistId: string,
+  ): Promise<string> {
+    const session = await prisma.session.findUnique({
+      where: { id: sessionId },
+      select: { psychologistId: true, status: true },
+    });
+    if (!session) {
+      throw new AppError("Session not found", 404);
+    }
+    if (session.psychologistId !== psychologistId) {
+      throw new AppError("Forbidden", 403);
+    }
+    if (session.status === "COMPLETED" || session.status === "CANCELLED") {
+      throw new AppError("Session no longer available", 410);
+    }
+
+    const psychologist = await prisma.psychologist.findUnique({
+      where: { id: psychologistId },
+      select: { tokenVersion: true },
+    });
+    if (!psychologist) {
+      throw new AppError("Unauthorized", 401);
+    }
+
+    return jwt.sign(
+      {
+        pid: psychologistId,
+        sid: sessionId,
+        v: psychologist.tokenVersion,
+        purpose: HOST_SOCKET_PURPOSE,
+      },
+      JWT_SECRET,
+      { expiresIn: HOST_SOCKET_TOKEN_TTL },
+    );
+  }
+
+  // Valida o token do socket do host para a sessão indicada.
+  // Devolve o id do psicólogo; lança erro se inválido, expirado ou revogado.
+  static async verifyHostSocketToken(
+    token: string,
+    sessionId: string,
+  ): Promise<string> {
+    let decoded: { pid?: unknown; sid?: unknown; v?: unknown; purpose?: unknown };
+    try {
+      decoded = jwt.verify(token, JWT_SECRET) as typeof decoded;
+    } catch {
+      throw new Error("Invalid host token");
+    }
+    if (
+      decoded.purpose !== HOST_SOCKET_PURPOSE ||
+      typeof decoded.pid !== "string" ||
+      decoded.sid !== sessionId
+    ) {
+      throw new Error("Invalid host token");
+    }
+
+    const psychologist = await prisma.psychologist.findUnique({
+      where: { id: decoded.pid },
+      select: { tokenVersion: true },
+    });
+    if (!psychologist || psychologist.tokenVersion !== decoded.v) {
+      throw new Error("Invalid host token");
+    }
+    return decoded.pid;
+  }
+
   static async createSession(
     data: z.infer<typeof createSessionSchema>,
     psychologistId: string,
