@@ -11,7 +11,7 @@
 
 - 🎥 **Vídeo e áudio bidirecional** via WebRTC peer-to-peer
 - 🔐 **Máxima privacidade** - E2E encryption ready e sem armazenamento de mídia por padrão
-- 👥 **Até 2 participantes** - Psicólogo (host) + Paciente (guest)
+- 👥 **Até 6 participantes** - Psicólogo (host) + pacientes admitidos por ele na sala de espera
 - 📱 **Interface intuitiva** - Controles básicos de vídeo, áudio e chamada
 - 🌐 **Agnóstico de rede** - Suporta TURN/STUN para NAT traversal
 - 🔑 **Autenticação segura** - JWT em HTTP-only cookies
