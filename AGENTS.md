@@ -170,8 +170,9 @@ fixo — o segredo do frontend vai para o bundle.
 
 **Autenticação no Socket.IO (obrigatória):**
 - Middleware `io.use(...)` valida o handshake antes do `connection`.
-- Cliente envia `auth: { sessionId, role, accessToken?, name?, admissionKey? }` (guest exige `name`, 1–60 caracteres).
-- Host autentica via cookie JWT (mesmo cookie da API). O `psychologistId` decodificado deve bater com o dono da `Session`.
+- Cliente envia `auth: { sessionId, role, accessToken?, name?, admissionKey?, hostToken? }` (guest exige `name`, 1–60 caracteres).
+- Host autentica com `hostToken`: JWT curto (5 min, `purpose: "host-socket"`, preso a uma sessão e à `tokenVersion`) emitido por `POST /sessions/:id/socket-token`. Em produção o frontend (Vercel) e o backend (Render) estão em domínios diferentes e o cookie de login não chega ao socket. Sem `hostToken`, o servidor aceita o cookie JWT (mesmo domínio, desenvolvimento). Em ambos os casos o psicólogo deve ser o dono da `Session`.
+- O `hostToken` não vale como login e o JWT de login não vale como `hostToken` (`verifyToken` rejeita tokens com `purpose`).
 - Guest autentica via `accessToken` (igual ao da `Session`).
 - Os handlers de socket (`offer`/`answer`/etc.) **leem `sessionId` e `role` de `socket.data.auth`**, nunca do payload do cliente — isso impede que um socket emita para sala que não autenticou.
 - Apenas o host pode emitir `session-end` (servidor revalida o role).
@@ -296,6 +297,7 @@ enum SessionStatus {
 | `PATCH` | `/sessions/:id/status` | Atualizar status (inclui cancelar) | ✅ |
 | `PATCH` | `/sessions/:id/reschedule` | Reagendar sessão | ✅ |
 | `GET` | `/sessions/join/:token` | Validar token do paciente | ❌ |
+| `POST` | `/sessions/:id/socket-token` | Token curto para o host conectar o WebSocket | ✅ |
 
 **Tokens de e-mail (`VerificationToken`):** apenas o hash SHA-256 é
 persistido — o valor em claro só existe no link enviado. Uso único
@@ -375,12 +377,22 @@ TURN_URL=turn:seu-servidor-turn:3478
 TURN_USERNAME=usuario
 TURN_CREDENTIAL=senha
 
+# Produção atrás de proxy (Vercel rewrite → Render → app)
+TRUST_PROXY=2
+
 # Frontend (.env)
 VITE_API_URL=http://localhost:3333
 VITE_SOCKET_URL=http://localhost:3333
 ```
 
 ---
+
+## 🚀 Deploy
+
+Frontend na **Vercel**, backend no **Render**, banco no **Neon** — passo a passo em [DEPLOY.md](DEPLOY.md).
+- A Vercel repassa `/api/*` ao backend (`frontend/vercel.json`): API no mesmo domínio do site, cookie first-party.
+- O WebSocket vai direto ao Render (`VITE_SOCKET_URL` em `frontend/.env.production`).
+- O backend roda como **uma única instância** (salas em memória).
 
 ## 📎 Referências e Documentação
 
