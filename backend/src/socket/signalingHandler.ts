@@ -1,8 +1,10 @@
+import { randomUUID } from "node:crypto";
 import { Server, Socket } from "socket.io";
 import { PrismaClient } from "@prisma/client";
 import cookie from "cookie";
 import { AuthService } from "../services/index.js";
 import { logger } from "../config/logger.js";
+import { env } from "../config/env.js";
 
 // Subconjunto dos tipos WebRTC necessários para sinalização (não disponíveis no Node.js)
 interface RTCSessionDescriptionInit {
@@ -17,35 +19,57 @@ interface RTCIceCandidateInit {
   usernameFragment?: string | null;
 }
 
-// Informações de um participante na sala
+type Role = "host" | "guest";
+
+// Participante admitido na chamada
 interface ParticipantInfo {
   socketId: string;
-  role: "host" | "guest";
+  role: Role;
+  name: string;
+}
+
+// Paciente aguardando aprovação do psicólogo
+interface WaitingGuest {
+  socketId: string;
+  name: string;
 }
 
 // Estado de uma sala de sinalização
 interface RoomState {
   participants: Map<string, ParticipantInfo>; // key: socketId
-  // Momento em que a sala ficou sem nenhum participante. null enquanto
-  // houver alguém conectado.
+  waiting: Map<string, WaitingGuest>; // key: socketId
+  // Chaves entregues a pacientes já aprovados. Permitem voltar à sala
+  // (reload da página, queda de rede) sem nova aprovação.
+  admittedKeys: Set<string>;
+  // Momento em que a sala ficou sem ninguém. null enquanto houver alguém.
   emptySince: number | null;
 }
 
 // Uma sala sem ninguém conectado por este tempo é encerrada e a sessão
 // marcada como COMPLETED — evita sessões presas em IN_PROGRESS quando
-// ambos os lados caem sem encerrar.
+// todos caem sem encerrar.
 export const IDLE_ROOM_TIMEOUT_MS = 5 * 60 * 1000;
 const IDLE_SWEEP_INTERVAL_MS = 60 * 1000;
+
+// Limite da sala (psicólogo incluso). A chamada é em malha P2P: cada
+// participante envia sua mídia para todos os outros, então o custo de
+// banda cresce rápido — acima de ~6 pessoas seria preciso um SFU.
+export const MAX_ROOM_PARTICIPANTS = env.MAX_ROOM_PARTICIPANTS;
+// Evita que um link vazado encha a lista de espera do psicólogo
+const MAX_WAITING_GUESTS = 20;
+const MAX_NAME_LENGTH = 60;
 
 // Dados validados anexados ao socket.data após o handshake
 interface SocketAuth {
   sessionId: string;
-  role: "host" | "guest";
-  // Para host: id do psicólogo dono da sessão. Para guest: indefinido.
+  role: Role;
+  name: string;
+  // Para host: id do psicólogo dono da sessão
   psychologistId?: string;
+  // Para guest: chave de reentrada recebida ao ser aprovado
+  admissionKey?: string;
 }
 
-// Helper tipado: lê `auth` do socket.data preservando narrowing
 function getAuth(socket: Socket): SocketAuth | undefined {
   return (socket.data as { auth?: SocketAuth }).auth;
 }
@@ -68,25 +92,34 @@ export function __resetRooms(): void {
   rooms.clear();
 }
 
-// Retorna o socketId do outro participante da sala, se existir
-function getOtherParticipant(
-  room: RoomState,
-  currentSocketId: string,
-): string | undefined {
-  for (const [socketId] of room.participants) {
-    if (socketId !== currentSocketId) return socketId;
+function getOrCreateRoom(sessionId: string): RoomState {
+  let room = rooms.get(sessionId);
+  if (!room) {
+    room = {
+      participants: new Map(),
+      waiting: new Map(),
+      admittedKeys: new Set(),
+      emptySince: null,
+    };
+    rooms.set(sessionId, room);
+  }
+  return room;
+}
+
+function findHost(room: RoomState): ParticipantInfo | undefined {
+  for (const p of room.participants.values()) {
+    if (p.role === "host") return p;
   }
   return undefined;
 }
 
-// Encontra a sala em que um socket está participando
-function findRoomBySocket(socketId: string): [string, RoomState] | undefined {
-  for (const [sessionId, room] of rooms) {
-    if (room.participants.has(socketId)) {
-      return [sessionId, room];
-    }
-  }
-  return undefined;
+// Remove caracteres de controle e limita o tamanho do nome exibido
+function sanitizeName(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  // eslint-disable-next-line no-control-regex
+  const cleaned = raw.replace(/[\u0000-\u001f\u007f]/g, "").trim();
+  if (cleaned.length === 0 || cleaned.length > MAX_NAME_LENGTH) return null;
+  return cleaned;
 }
 
 // Extrai cookie 'jwt' do header de cookies do handshake
@@ -111,6 +144,7 @@ export async function sweepIdleRooms(
   for (const [sessionId, room] of rooms) {
     if (
       room.participants.size === 0 &&
+      room.waiting.size === 0 &&
       room.emptySince !== null &&
       now - room.emptySince >= IDLE_ROOM_TIMEOUT_MS
     ) {
@@ -147,14 +181,14 @@ export function registerSignalingHandlers(
   sweeper.unref?.();
 
   io.on("close", () => clearInterval(sweeper));
+
   // Middleware de autenticação: valida sessionId/role/credenciais antes do `connection`
   io.use(async (socket, next) => {
     try {
-      const sessionId = socket.handshake.auth?.sessionId as string | undefined;
-      const role = socket.handshake.auth?.role as "host" | "guest" | undefined;
-      const accessToken = socket.handshake.auth?.accessToken as
-        | string
-        | undefined;
+      const handshake = socket.handshake.auth ?? {};
+      const sessionId = handshake.sessionId as string | undefined;
+      const role = handshake.role as Role | undefined;
+      const accessToken = handshake.accessToken as string | undefined;
 
       if (!sessionId || (role !== "host" && role !== "guest")) {
         return next(new Error("Invalid handshake: sessionId/role required"));
@@ -186,13 +220,26 @@ export function registerSignalingHandlers(
         if (decoded.id !== session.psychologistId) {
           return next(new Error("Forbidden: not the session owner"));
         }
-        setAuth(socket, { sessionId, role, psychologistId: decoded.id });
+        setAuth(socket, {
+          sessionId,
+          role,
+          name: "Psicólogo",
+          psychologistId: decoded.id,
+        });
       } else {
-        // Guest autentica via accessToken da sessão
+        // Guest autentica via accessToken da sessão e precisa se identificar
         if (!accessToken || accessToken !== session.accessToken) {
           return next(new Error("Invalid access token"));
         }
-        setAuth(socket, { sessionId, role });
+        const name = sanitizeName(handshake.name);
+        if (!name) {
+          return next(new Error("Invalid name"));
+        }
+        const admissionKey =
+          typeof handshake.admissionKey === "string"
+            ? handshake.admissionKey
+            : undefined;
+        setAuth(socket, { sessionId, role, name, admissionKey });
       }
 
       next();
@@ -201,51 +248,72 @@ export function registerSignalingHandlers(
     }
   });
 
+  // Coloca um socket como participante da chamada e dispara a negociação:
+  // quem entra recebe a lista de quem já está (e cria as offers); os demais
+  // recebem `user-joined` e aguardam a offer do recém-chegado.
+  function admitToCall(socket: Socket, room: RoomState, auth: SocketAuth): void {
+    const { sessionId, role, name } = auth;
+
+    const peers = [...room.participants.values()].map((p) => ({
+      peerId: p.socketId,
+      role: p.role,
+      name: p.name,
+    }));
+
+    socket.join(sessionId);
+    room.participants.set(socket.id, { socketId: socket.id, role, name });
+    room.emptySince = null;
+
+    socket.to(sessionId).emit("user-joined", { peerId: socket.id, role, name });
+    socket.emit("room-peers", { peers });
+  }
+
+  // Envia ao host a lista atual de pacientes aguardando aprovação
+  function emitWaitingList(room: RoomState): void {
+    const host = findHost(room);
+    if (!host) return;
+    io.to(host.socketId).emit("waiting-list", {
+      guests: [...room.waiting.values()].map((g) => ({
+        guestId: g.socketId,
+        name: g.name,
+      })),
+    });
+  }
+
+  function isRoomFull(room: RoomState): boolean {
+    return room.participants.size >= MAX_ROOM_PARTICIPANTS;
+  }
+
   io.on("connection", (socket: Socket) => {
     // ----------------------------------------------------------------
-    // join-room: participante entra na sala de sinalização
-    // O sessionId/role são lidos do auth validado, não do payload.
+    // join-room: participante entra na sala de sinalização.
+    // sessionId/role vêm do auth validado, nunca do payload.
+    // Host entra direto; guest vai para a lista de espera até o host
+    // aprovar (exceto se já foi aprovado antes nesta sala).
     // ----------------------------------------------------------------
     socket.on("join-room", async () => {
       const auth = getAuth(socket);
       if (!auth) return;
       const { sessionId, role } = auth;
 
-      // Verificar se a sala já tem 2 participantes
-      const existing = rooms.get(sessionId);
-      if (existing && existing.participants.size >= 2) {
-        socket.emit("room-full", {
-          error: "Room already has 2 participants",
-        });
+      const room = getOrCreateRoom(sessionId);
+
+      // Evita entrar duas vezes com o mesmo socket
+      if (room.participants.has(socket.id) || room.waiting.has(socket.id)) {
         return;
       }
 
-      // Garantir unicidade por role: se já existe um host/guest, rejeitar duplicado
-      if (existing) {
-        for (const p of existing.participants.values()) {
-          if (p.role === role) {
-            socket.emit("room-full", {
-              error: `A ${role} is already connected to this room`,
-            });
-            return;
-          }
-        }
-      }
-
-      // Criar sala se ainda não existir
-      if (!existing) {
-        rooms.set(sessionId, { participants: new Map(), emptySince: null });
-      }
-
-      const room = rooms.get(sessionId)!;
-
-      // Adicionar socket à sala Socket.IO e ao Map interno
-      socket.join(sessionId);
-      room.participants.set(socket.id, { socketId: socket.id, role });
-      room.emptySince = null;
-
-      // Quando o host entra, marcar a sessão como IN_PROGRESS (idempotente)
       if (role === "host") {
+        if (findHost(room)) {
+          socket.emit("room-full", {
+            error: "A host is already connected to this room",
+          });
+          return;
+        }
+
+        admitToCall(socket, room, auth);
+
+        // Marcar a sessão como IN_PROGRESS (idempotente)
         try {
           await prisma.session.updateMany({
             where: { id: sessionId, status: "SCHEDULED" },
@@ -257,78 +325,129 @@ export function registerSignalingHandlers(
             "[signaling] Failed to mark session IN_PROGRESS",
           );
         }
+
+        // Pacientes que chegaram antes aparecem para aprovação
+        emitWaitingList(room);
+        return;
       }
 
-      // Avisar os dois lados: quem já estava e quem acabou de entrar.
-      // Só o host cria a offer, então ele precisa saber do guest em
-      // qualquer ordem de entrada — inclusive quando o paciente já
-      // estava aguardando antes de o psicólogo entrar.
-      const otherId = getOtherParticipant(room, socket.id);
-      if (otherId) {
-        const other = room.participants.get(otherId)!;
-        io.to(otherId).emit("user-joined", { role });
-        socket.emit("user-joined", { role: other.role });
+      // Guest já aprovado antes (reload/queda): volta direto para a chamada
+      if (auth.admissionKey && room.admittedKeys.has(auth.admissionKey)) {
+        if (isRoomFull(room)) {
+          socket.emit("room-full", { error: "Room is full" });
+          return;
+        }
+        admitToCall(socket, room, auth);
+        return;
+      }
+
+      if (room.waiting.size >= MAX_WAITING_GUESTS) {
+        socket.emit("room-full", { error: "Waiting list is full" });
+        return;
+      }
+
+      room.waiting.set(socket.id, { socketId: socket.id, name: auth.name });
+      room.emptySince = null;
+      socket.emit("waiting-for-approval");
+
+      const host = findHost(room);
+      if (host) {
+        io.to(host.socketId).emit("guest-waiting", {
+          guestId: socket.id,
+          name: auth.name,
+        });
       }
     });
 
     // ----------------------------------------------------------------
-    // offer: encaminhar SDP offer para o outro participante
+    // admit-guest / deny-guest: apenas o host decide quem entra
     // ----------------------------------------------------------------
+    socket.on("admit-guest", (payload: { guestId?: unknown }) => {
+      const auth = getAuth(socket);
+      if (!auth || auth.role !== "host") return;
+      const room = rooms.get(auth.sessionId);
+      if (!room || !room.participants.has(socket.id)) return;
+
+      const guestId = typeof payload?.guestId === "string" ? payload.guestId : "";
+      const waiting = room.waiting.get(guestId);
+      if (!waiting) return;
+
+      if (isRoomFull(room)) {
+        socket.emit("admission-error", {
+          guestId,
+          error: "Room is full",
+        });
+        return;
+      }
+
+      const guestSocket = io.sockets.sockets.get(guestId);
+      const guestAuth = guestSocket ? getAuth(guestSocket) : undefined;
+      room.waiting.delete(guestId);
+      if (!guestSocket || !guestAuth) {
+        emitWaitingList(room);
+        return;
+      }
+
+      const admissionKey = randomUUID();
+      room.admittedKeys.add(admissionKey);
+      guestAuth.admissionKey = admissionKey;
+      guestSocket.emit("admitted", { admissionKey });
+      admitToCall(guestSocket, room, guestAuth);
+      emitWaitingList(room);
+    });
+
+    socket.on("deny-guest", (payload: { guestId?: unknown }) => {
+      const auth = getAuth(socket);
+      if (!auth || auth.role !== "host") return;
+      const room = rooms.get(auth.sessionId);
+      if (!room || !room.participants.has(socket.id)) return;
+
+      const guestId = typeof payload?.guestId === "string" ? payload.guestId : "";
+      if (!room.waiting.delete(guestId)) return;
+
+      io.to(guestId).emit("admission-denied");
+      emitWaitingList(room);
+    });
+
+    // ----------------------------------------------------------------
+    // offer / answer / ice-candidate: encaminhados a um par específico.
+    // Só circulam entre participantes admitidos da mesma sala.
+    // ----------------------------------------------------------------
+    function relay(event: "offer" | "answer" | "ice-candidate", data: object, to: unknown) {
+      const auth = getAuth(socket);
+      if (!auth) return;
+      const room = rooms.get(auth.sessionId);
+      if (!room || !room.participants.has(socket.id)) return;
+      if (typeof to !== "string" || to === socket.id) return;
+      if (!room.participants.has(to)) return;
+      io.to(to).emit(event, { from: socket.id, ...data });
+    }
+
     socket.on(
       "offer",
-      (payload: { offer: RTCSessionDescriptionInit }) => {
-        const auth = getAuth(socket);
-        if (!auth) return;
-        const room = rooms.get(auth.sessionId);
-        if (!room) return;
-
-        const otherId = getOtherParticipant(room, socket.id);
-        if (otherId) {
-          io.to(otherId).emit("offer", { offer: payload.offer });
-        }
+      (payload: { to?: unknown; offer: RTCSessionDescriptionInit }) => {
+        relay("offer", { offer: payload?.offer }, payload?.to);
       },
     );
 
-    // ----------------------------------------------------------------
-    // answer: encaminhar SDP answer para o outro participante
-    // ----------------------------------------------------------------
     socket.on(
       "answer",
-      (payload: { answer: RTCSessionDescriptionInit }) => {
-        const auth = getAuth(socket);
-        if (!auth) return;
-        const room = rooms.get(auth.sessionId);
-        if (!room) return;
-
-        const otherId = getOtherParticipant(room, socket.id);
-        if (otherId) {
-          io.to(otherId).emit("answer", { answer: payload.answer });
-        }
+      (payload: { to?: unknown; answer: RTCSessionDescriptionInit }) => {
+        relay("answer", { answer: payload?.answer }, payload?.to);
       },
     );
 
-    // ----------------------------------------------------------------
-    // ice-candidate: encaminhar candidato ICE para o outro participante
-    // ----------------------------------------------------------------
     socket.on(
       "ice-candidate",
-      (payload: { candidate: RTCIceCandidateInit }) => {
-        const auth = getAuth(socket);
-        if (!auth) return;
-        const room = rooms.get(auth.sessionId);
-        if (!room) return;
-
-        const otherId = getOtherParticipant(room, socket.id);
-        if (otherId) {
-          io.to(otherId).emit("ice-candidate", { candidate: payload.candidate });
-        }
+      (payload: { to?: unknown; candidate: RTCIceCandidateInit }) => {
+        relay("ice-candidate", { candidate: payload?.candidate }, payload?.to);
       },
     );
 
     // ----------------------------------------------------------------
     // session-end: somente o host pode encerrar
     // ----------------------------------------------------------------
-    socket.on("session-end", async () => {
+    socket.on("session-end", async (ack?: unknown) => {
       const auth = getAuth(socket);
       if (!auth) return;
       if (auth.role !== "host") return;
@@ -336,10 +455,15 @@ export function registerSignalingHandlers(
       const { sessionId } = auth;
       const room = rooms.get(sessionId);
 
-      // Emitir session-ended para todos na sala (inclusive o remetente)
+      // Avisar todos: participantes da chamada e quem ainda aguardava
       io.to(sessionId).emit("session-ended");
+      if (room) {
+        for (const guestId of room.waiting.keys()) {
+          io.to(guestId).emit("session-ended");
+        }
+        rooms.delete(sessionId);
+      }
 
-      // Atualizar status da sessão para COMPLETED no banco de dados
       try {
         await prisma.session.update({
           where: { id: sessionId },
@@ -352,33 +476,29 @@ export function registerSignalingHandlers(
         );
       }
 
-      // Limpar a sala do Map
-      if (room) {
-        rooms.delete(sessionId);
-      }
+      if (typeof ack === "function") ack();
     });
 
     // ----------------------------------------------------------------
-    // disconnect: participante desconectou
+    // disconnect: participante ou paciente em espera desconectou
     // ----------------------------------------------------------------
     socket.on("disconnect", () => {
-      const entry = findRoomBySocket(socket.id);
-      if (!entry) return;
+      const auth = getAuth(socket);
+      if (!auth) return;
+      const room = rooms.get(auth.sessionId);
+      if (!room) return;
 
-      const [, room] = entry;
-
-      // Remover o socket desconectado do Map
-      room.participants.delete(socket.id);
-
-      // Notificar o participante restante
-      const otherId = getOtherParticipant(room, socket.id);
-      if (otherId) {
-        io.to(otherId).emit("user-left");
+      if (room.waiting.delete(socket.id)) {
+        emitWaitingList(room);
       }
 
-      // Sala vazia não é removida na hora: o participante pode estar
-      // reconectando. O varredor de inatividade encerra depois do timeout.
-      if (room.participants.size === 0) {
+      if (room.participants.delete(socket.id)) {
+        io.to(auth.sessionId).emit("user-left", { peerId: socket.id });
+      }
+
+      // Sala vazia não é removida na hora: alguém pode estar reconectando.
+      // O varredor de inatividade encerra depois do timeout.
+      if (room.participants.size === 0 && room.waiting.size === 0) {
         room.emptySince = Date.now();
       }
     });
