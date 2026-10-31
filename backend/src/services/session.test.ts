@@ -183,3 +183,50 @@ describe("SessionService — dados do psicólogo expostos", () => {
     });
   });
 });
+
+describe("SessionService — token de socket do host", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    prismaMock.psychologist.findUnique.mockResolvedValue({ tokenVersion: 0 });
+  });
+
+  it("emite token para o dono e ele é aceito para a mesma sessão", async () => {
+    prismaMock.session.findUnique.mockResolvedValue({
+      psychologistId: "user-1",
+      status: "SCHEDULED",
+    });
+    const token = await SessionService.issueHostSocketToken("s1", "user-1");
+    await expect(SessionService.verifyHostSocketToken(token, "s1")).resolves.toBe("user-1");
+    await expect(SessionService.verifyHostSocketToken(token, "s2")).rejects.toThrow();
+  });
+
+  it("recusa emitir para quem não é dono da sessão", async () => {
+    prismaMock.session.findUnique.mockResolvedValue({
+      psychologistId: "outro",
+      status: "SCHEDULED",
+    });
+    await expect(
+      SessionService.issueHostSocketToken("s1", "user-1"),
+    ).rejects.toMatchObject({ status: 403 });
+  });
+
+  it("recusa emitir para sessão encerrada", async () => {
+    prismaMock.session.findUnique.mockResolvedValue({
+      psychologistId: "user-1",
+      status: "COMPLETED",
+    });
+    await expect(
+      SessionService.issueHostSocketToken("s1", "user-1"),
+    ).rejects.toMatchObject({ status: 410 });
+  });
+
+  it("token de socket não vale como login", async () => {
+    prismaMock.session.findUnique.mockResolvedValue({
+      psychologistId: "user-1",
+      status: "SCHEDULED",
+    });
+    const token = await SessionService.issueHostSocketToken("s1", "user-1");
+    const { AuthService } = await import("./index");
+    expect(() => AuthService.verifyToken(token)).toThrow("Invalid token");
+  });
+});

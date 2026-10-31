@@ -93,6 +93,7 @@ interface ConnectOptions {
   jwtCookie?: string;
   name?: string;
   admissionKey?: string;
+  hostToken?: string;
 }
 
 // Cria um cliente Socket.IO com o handshake indicado (sem esperar conexão)
@@ -103,9 +104,10 @@ function makeClient({
   jwtCookie,
   name = "Maria",
   admissionKey,
+  hostToken,
 }: ConnectOptions): ClientSocket {
   const client = ioClient(`http://localhost:${port}`, {
-    auth: { sessionId, role, accessToken, name, admissionKey },
+    auth: { sessionId, role, accessToken, name, admissionKey, hostToken },
     extraHeaders: jwtCookie ? { cookie: `jwt=${jwtCookie}` } : {},
     transports: ["websocket"],
     reconnection: false,
@@ -265,6 +267,58 @@ describe("signaling handshake — autenticação", () => {
   });
 });
 
+
+// Token curto de socket do host, como emitido por POST /sessions/:id/socket-token
+function hostSocketToken(overrides: Record<string, unknown> = {}): string {
+  return jwt.sign(
+    { pid: OWNER_ID, sid: SESSION_ID, v: 0, purpose: "host-socket", ...overrides },
+    "test-secret-do-not-use-in-prod",
+    { expiresIn: "5m" },
+  );
+}
+
+describe("signaling handshake — token de socket do host", () => {
+  it("aceita host com token de socket válido, sem cookie", async () => {
+    const client = makeClient({ role: "host", hostToken: hostSocketToken() });
+    expect((await tryConnect(client)).connected).toBe(true);
+  });
+
+  it("rejeita token emitido para outra sessão", async () => {
+    const client = makeClient({
+      role: "host",
+      hostToken: hostSocketToken({ sid: "outra-sessao" }),
+    });
+    const result = await tryConnect(client);
+    expect(result.connected).toBe(false);
+    expect(result.error).toMatch(/Invalid auth token/);
+  });
+
+  it("rejeita token revogado pelo logout (tokenVersion)", async () => {
+    prismaMock.psychologist.findUnique.mockResolvedValue({
+      id: OWNER_ID,
+      email: "owner@test.com",
+      tokenVersion: 1,
+    });
+    const client = makeClient({ role: "host", hostToken: hostSocketToken() });
+    expect((await tryConnect(client)).connected).toBe(false);
+  });
+
+  it("rejeita o JWT de login usado como token de socket", async () => {
+    const client = makeClient({ role: "host", hostToken: hostJwt() });
+    const result = await tryConnect(client);
+    expect(result.connected).toBe(false);
+    expect(result.error).toMatch(/Invalid auth token/);
+  });
+
+  it("rejeita token de socket de outro psicólogo", async () => {
+    const client = makeClient({
+      role: "host",
+      hostToken: hostSocketToken({ pid: "psy-intruder" }),
+    });
+    const result = await tryConnect(client);
+    expect(result.connected).toBe(false);
+  });
+});
 
 describe("signaling handshake — nome do paciente", () => {
   it("rejeita guest sem nome", async () => {

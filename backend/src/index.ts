@@ -24,6 +24,12 @@ export const io = new SocketIOServer(httpServer, {
 
 export { prisma };
 
+// Atrás de proxies (Vercel/Render), o IP do cliente vem do X-Forwarded-For.
+// Sem isso o rate limit veria todos os usuários com o IP do proxy.
+if (env.TRUST_PROXY > 0) {
+  app.set("trust proxy", env.TRUST_PROXY);
+}
+
 // Registrar handlers de sinalização WebRTC
 registerSignalingHandlers(io, prisma);
 

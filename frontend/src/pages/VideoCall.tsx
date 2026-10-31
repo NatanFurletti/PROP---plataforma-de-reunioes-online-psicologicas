@@ -1,8 +1,13 @@
-import React, { useCallback, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import { Navigate, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { ControlButton } from "../components/ControlButton";
 import { VideoTile } from "../components/VideoTile";
 import { useWebRTC, type RemoteParticipant } from "../hooks/useWebRTC";
+import { healthService } from "../services/api";
+
+// Intervalo do ping que mantém o backend acordado (Render free dorme após
+// ~15 min sem requisições HTTP; o WebSocket sozinho pode não contar)
+const KEEP_ALIVE_MS = 4 * 60 * 1000;
 
 interface PatientSession {
   patientName?: string;
@@ -166,6 +171,15 @@ const VideoCallInner: React.FC<VideoCallInnerProps> = ({
     onRoomFull: handleRoomFull,
     onError: handleError,
   });
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      healthService.ping().catch(() => {
+        // Falha pontual não importa: o próximo ping tenta de novo
+      });
+    }, KEEP_ALIVE_MS);
+    return () => clearInterval(timer);
+  }, []);
 
   // Sair da chamada. O destino é definido aqui, sem depender de resposta
   // do servidor — o socket é fechado em seguida e nenhum evento chegaria.

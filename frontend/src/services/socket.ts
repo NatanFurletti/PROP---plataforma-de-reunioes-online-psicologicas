@@ -5,7 +5,7 @@ const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || "http://localhost:3333";
 export interface SocketAuth {
   sessionId: string;
   role: "host" | "guest";
-  // Necessário apenas para guest (host autentica via cookie JWT)
+  // Necessário apenas para guest (host autentica via token de socket ou cookie)
   accessToken?: string;
   // Guest: nome exibido ao psicólogo na tela de aprovação
   name?: string;
@@ -13,9 +13,17 @@ export interface SocketAuth {
   admissionKey?: string;
 }
 
+export interface SocketOptions extends SocketAuth {
+  // Host: busca um token curto de socket a cada tentativa de conexão.
+  // O cookie de login não chega ao backend quando ele está em outro domínio.
+  getHostToken?: () => Promise<string>;
+}
+
 let socketInstance: Socket | null = null;
 // Auth do socket ativo, para decidir entre reutilizar e recriar
 let currentAuth: SocketAuth | null = null;
+// Campos acrescentados depois da criação (ex.: admissionKey)
+let authPatch: Partial<SocketAuth> = {};
 
 function sameAuth(a: SocketAuth | null, b: SocketAuth): boolean {
   return (
@@ -28,10 +36,12 @@ function sameAuth(a: SocketAuth | null, b: SocketAuth): boolean {
 }
 
 // Inicializa a conexão Socket.IO com o handshake de autenticação.
-// Reutiliza o socket existente quando o `auth` é equivalente — chamadas
-// repetidas (ex: a cada candidato ICE) nao podem derrubar a sinalizacao.
-// Só recria quando o handshake muda de fato.
-export const initializeSocket = (auth: SocketAuth): Socket => {
+// Reutiliza o socket existente quando o `auth` é equivalente; só recria
+// quando o handshake muda de fato.
+export const initializeSocket = ({
+  getHostToken,
+  ...auth
+}: SocketOptions): Socket => {
   if (socketInstance && sameAuth(currentAuth, auth)) {
     return socketInstance;
   }
@@ -42,9 +52,25 @@ export const initializeSocket = (auth: SocketAuth): Socket => {
   }
 
   currentAuth = { ...auth };
+  authPatch = {};
+
+  // `auth` como função: é avaliada a cada (re)conexão, então reconexões
+  // levam um token novo e os campos acrescentados com updateSocketAuth.
+  const buildAuth = (cb: (data: object) => void) => {
+    const base = { ...currentAuth, ...authPatch };
+    if (!getHostToken) {
+      cb(base);
+      return;
+    }
+    getHostToken()
+      .then((hostToken) => cb({ ...base, hostToken }))
+      // Sem token, tenta pelo cookie (mesmo domínio, ex.: desenvolvimento)
+      .catch(() => cb(base));
+  };
+
   socketInstance = io(SOCKET_URL, {
     withCredentials: true,
-    auth,
+    auth: buildAuth,
     reconnection: true,
     reconnectionDelay: 1000,
     reconnectionDelayMax: 5000,
@@ -61,6 +87,11 @@ export const initializeSocket = (auth: SocketAuth): Socket => {
   return socketInstance;
 };
 
+// Acrescenta campos ao handshake das próximas (re)conexões
+export const updateSocketAuth = (patch: Partial<SocketAuth>): void => {
+  authPatch = { ...authPatch, ...patch };
+};
+
 export const getSocket = (): Socket => {
   if (!socketInstance) {
     throw new Error("Socket not initialized. Call initializeSocket first.");
@@ -74,4 +105,5 @@ export const closeSocket = (): void => {
     socketInstance = null;
   }
   currentAuth = null;
+  authPatch = {};
 };

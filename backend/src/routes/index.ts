@@ -41,6 +41,11 @@ router.post("/auth/logout", authMiddleware, controllers.logoutPsychologist);
 router.post("/sessions", authMiddleware, controllers.createSession);
 router.get("/sessions", authMiddleware, controllers.listSessions);
 router.get("/sessions/:id", authMiddleware, controllers.getSession);
+router.post(
+  "/sessions/:id/socket-token",
+  authMiddleware,
+  controllers.issueSocketToken,
+);
 router.patch(
   "/sessions/:id/status",
   authMiddleware,

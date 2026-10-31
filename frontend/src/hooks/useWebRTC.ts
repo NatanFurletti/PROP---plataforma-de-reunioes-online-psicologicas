@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Socket } from "socket.io-client";
-import { initializeSocket, closeSocket } from "../services/socket";
+import { initializeSocket, closeSocket, updateSocketAuth } from "../services/socket";
+import { sessionService } from "../services/api";
 
 export type Role = "host" | "guest";
 
@@ -347,6 +348,10 @@ export const useWebRTC = ({
         accessToken,
         name,
         admissionKey: admissionKeyRef.current,
+        getHostToken:
+          role === "host"
+            ? async () => (await sessionService.getSocketToken(sessionId)).data.token
+            : undefined,
       });
       socketRef.current = socket;
       let hasConnected = false;
@@ -384,10 +389,7 @@ export const useWebRTC = ({
         if (cancelled) return;
         admissionKeyRef.current = key;
         // Reconexões automáticas do socket passam a levar a chave
-        const withAuth = socket as Socket & { auth?: Record<string, unknown> };
-        if (withAuth.auth && typeof withAuth.auth === "object") {
-          withAuth.auth = { ...withAuth.auth, admissionKey: key };
-        }
+        updateSocketAuth({ admissionKey: key });
         setAdmissionStatus("admitted");
         callbacksRef.current.onAdmitted?.(key);
       });

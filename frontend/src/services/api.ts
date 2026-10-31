@@ -1,6 +1,8 @@
 import axios from "axios";
 
-const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3333";
+// Vazio em produção: a API é servida no mesmo domínio do frontend (rewrite
+// da Vercel para o backend), o que mantém o cookie de login first-party.
+const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:3333";
 
 const api = axios.create({
   baseURL: `${API_URL}/api`,
@@ -46,6 +48,9 @@ export const sessionService = {
     api.post("/sessions", data),
   listSessions: () => api.get("/sessions"),
   getSession: (id: string) => api.get(`/sessions/${id}`),
+  // Token curto para o psicólogo autenticar a conexão da chamada
+  getSocketToken: (id: string) =>
+    api.post<{ token: string }>(`/sessions/${id}/socket-token`),
   updateSessionStatus: (id: string, status: string) =>
     api.patch(`/sessions/${id}/status`, { status }),
   cancelSession: (id: string) =>
@@ -55,6 +60,12 @@ export const sessionService = {
     data: { scheduledAt: string; durationMinutes?: number },
   ) => api.patch(`/sessions/${id}/reschedule`, data),
   validateSessionToken: (token: string) => api.get(`/sessions/join/${token}`),
+};
+
+// Mantém o backend acordado durante a chamada (plano gratuito do Render
+// dorme sem requisições HTTP)
+export const healthService = {
+  ping: () => api.get("/health"),
 };
 
 export default api;

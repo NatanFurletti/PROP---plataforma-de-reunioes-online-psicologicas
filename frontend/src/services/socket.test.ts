@@ -18,7 +18,16 @@ vi.mock("socket.io-client", () => ({
   }),
 }));
 
-const { initializeSocket, getSocket, closeSocket } = await import("./socket");
+const { initializeSocket, getSocket, closeSocket, updateSocketAuth } = await import(
+  "./socket"
+);
+
+// O auth é uma função avaliada a cada (re)conexão; resolve o que ela entrega
+function resolveAuth(socket: { auth: unknown }): Promise<unknown> {
+  return new Promise((resolve) => {
+    (socket.auth as (cb: (data: unknown) => void) => void)(resolve);
+  });
+}
 
 const HOST_AUTH = { sessionId: "s1", role: "host" as const };
 const GUEST_AUTH = {
@@ -36,10 +45,36 @@ afterEach(() => {
 });
 
 describe("initializeSocket", () => {
-  it("cria um socket com o auth informado", () => {
+  it("cria um socket com o auth informado", async () => {
     const socket = initializeSocket(HOST_AUTH);
     expect(created).toHaveLength(1);
-    expect(socket.auth).toEqual(HOST_AUTH);
+    expect(await resolveAuth(socket)).toEqual(HOST_AUTH);
+  });
+
+  it("inclui um token novo do host a cada conexão", async () => {
+    let n = 0;
+    const socket = initializeSocket({
+      ...HOST_AUTH,
+      getHostToken: async () => `token-${++n}`,
+    });
+    expect(await resolveAuth(socket)).toEqual({ ...HOST_AUTH, hostToken: "token-1" });
+    expect(await resolveAuth(socket)).toEqual({ ...HOST_AUTH, hostToken: "token-2" });
+  });
+
+  it("sem token do host, conecta só com o auth básico (cookie)", async () => {
+    const socket = initializeSocket({
+      ...HOST_AUTH,
+      getHostToken: async () => {
+        throw new Error("offline");
+      },
+    });
+    expect(await resolveAuth(socket)).toEqual(HOST_AUTH);
+  });
+
+  it("updateSocketAuth acrescenta campos às próximas conexões", async () => {
+    const socket = initializeSocket(GUEST_AUTH);
+    updateSocketAuth({ admissionKey: "k1" });
+    expect(await resolveAuth(socket)).toEqual({ ...GUEST_AUTH, admissionKey: "k1" });
   });
 
   it("reutiliza o socket quando o auth é o mesmo", () => {

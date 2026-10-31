@@ -21,6 +21,7 @@ const socketMock = {
 vi.mock("../services/socket", () => ({
   initializeSocket: vi.fn(() => socketMock),
   closeSocket: vi.fn(),
+  updateSocketAuth: vi.fn(),
   getSocket: vi.fn(() => socketMock),
 }));
 
