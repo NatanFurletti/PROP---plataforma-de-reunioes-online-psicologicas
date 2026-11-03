@@ -547,13 +547,23 @@ describe("signaling — vários participantes", () => {
     expect(await admitted).toBeNull();
   });
 
-  it("rejeita um segundo host na mesma sala", async () => {
-    await connectHost();
+  it("segundo socket do host substitui o primeiro, que é avisado", async () => {
+    const first = await connectHost();
+    const { guest } = await joinAndAdmit(first);
+    const firstId = first.id;
+    const replaced = waitFor(first, "session-replaced");
+    const left = waitFor<{ peerId: string }>(guest, "user-left");
+
     const second = makeClient({ role: "host", jwtCookie: hostJwt() });
     await tryConnect(second);
-    const roomFull = waitFor<{ error: string }>(second, "room-full");
+    const roomPeers = waitFor<{ peers: PeerInfo[] }>(second, "room-peers");
     second.emit("join-room");
-    expect((await roomFull)?.error).toMatch(/host is already connected/);
+
+    expect(await replaced).not.toBeNull();
+    expect(await left).toEqual({ peerId: firstId });
+    expect((await roomPeers)?.peers).toEqual([
+      { peerId: guest.id, role: "guest", name: "Maria" },
+    ]);
   });
 
   it("marca a sessão como IN_PROGRESS quando o host entra", async () => {
@@ -768,5 +778,31 @@ describe("signaling — quedas involuntárias (app em segundo plano)", () => {
     const restart = waitFor(host, "restart-ice");
     guest.emit("restart-ice", { to: host.id });
     expect(await restart).toEqual({ from: guest.id });
+  });
+});
+
+describe("signaling — mesma pessoa com dois sockets", () => {
+  it("paciente que volta antes de o servidor notar a queda não aparece duas vezes", async () => {
+    const host = await connectHost();
+    const { guest, admissionKey } = await joinAndAdmit(host);
+    const oldId = guest.id;
+    // O socket antigo ainda parece vivo (celular congelado, sem ping timeout)
+    const replaced = waitFor(guest, "session-replaced");
+    const left = waitFor<{ peerId: string }>(host, "user-left");
+    const joinedIds: string[] = [];
+    host.on("user-joined", ({ peerId }: PeerInfo) => joinedIds.push(peerId));
+
+    const fresh = makeClient({
+      role: "guest",
+      accessToken: ACCESS_TOKEN,
+      name: "Maria",
+      admissionKey,
+    });
+    await tryConnect(fresh);
+    fresh.emit("join-room");
+
+    expect(await left).toEqual({ peerId: oldId });
+    expect(await replaced).not.toBeNull();
+    await vi.waitFor(() => expect(joinedIds).toContain(fresh.id));
   });
 });

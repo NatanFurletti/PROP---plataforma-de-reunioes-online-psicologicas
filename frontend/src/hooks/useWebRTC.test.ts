@@ -684,3 +684,27 @@ describe("useWebRTC — câmera indisponível", () => {
     expect(result.current.participants[0].stream?.getTracks()).toEqual([audio, video]);
   });
 });
+
+describe("useWebRTC — conexão substituída", () => {
+  it("para de reconectar e avisa quando outra aba assume a sessão", async () => {
+    const onError = vi.fn();
+    const { result } = renderHook(() => useWebRTC({ ...GUEST_OPTS, onError }));
+    await waitFor(() => expect(result.current.localStream).not.toBeNull());
+    await act(async () => serverEmit("room-peers", { peers: [HOST_PEER] }));
+
+    await act(async () => serverEmit("session-replaced"));
+    expect(result.current.participants).toHaveLength(0);
+    expect(onError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringMatching(/another tab/) }),
+    );
+
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => "visible",
+    });
+    await act(async () => {
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    expect(socketMock.connect).not.toHaveBeenCalled();
+  });
+});

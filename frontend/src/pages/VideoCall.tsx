@@ -48,6 +48,9 @@ function friendlyError(error: Error): string {
   const message = error.message || "";
   // DOMException traz o tipo em `name` (ex.: NotReadableError)
   const detail = `${error.name} ${message}`;
+  if (/another tab or device/i.test(message)) {
+    return "Você entrou nesta sessão em outra aba ou dispositivo. Esta janela foi desconectada.";
+  }
   if (/audio only/i.test(message)) {
     return "Não foi possível usar a câmera (ela pode estar em uso por outro programa ou navegador). Você entrou só com áudio: feche o outro programa e toque em Câmera para ligá-la.";
   }

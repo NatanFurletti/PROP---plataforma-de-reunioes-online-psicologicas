@@ -309,6 +309,17 @@ export function registerSignalingHandlers(
     }
   }
 
+  // A mesma pessoa entrou com um socket novo: tira o antigo da sala e, se
+  // ele ainda estiver vivo (outra aba), avisa e desconecta
+  function replaceParticipant(sessionId: string, room: RoomState, socketId: string): void {
+    removeParticipant(sessionId, room, socketId);
+    const oldSocket = io.sockets.sockets.get(socketId);
+    if (oldSocket) {
+      oldSocket.emit("session-replaced");
+      oldSocket.disconnect(true);
+    }
+  }
+
   // Coloca um socket como participante da chamada e dispara a negociação:
   // quem entra recebe a lista de quem já está (e cria as offers); os demais
   // recebem `user-joined` e aguardam a offer do recém-chegado.
@@ -380,16 +391,12 @@ export function registerSignalingHandlers(
       socket.leave(sessionId);
 
       if (role === "host") {
+        // Só o dono da sessão autentica como host: se já há um host, é o
+        // mesmo psicólogo voltando (ex.: celular saiu do segundo plano
+        // antes de o servidor notar a queda) ou em outra aba. O mais novo
+        // assume a vaga.
         const currentHost = findHost(room);
-        if (currentHost?.removalTimer) {
-          // O host caiu e voltou com outro socket: libera a vaga antiga
-          removeParticipant(sessionId, room, currentHost.socketId);
-        } else if (currentHost) {
-          socket.emit("room-full", {
-            error: "A host is already connected to this room",
-          });
-          return;
-        }
+        if (currentHost) replaceParticipant(sessionId, room, currentHost.socketId);
 
         admitToCall(socket, room, auth);
 
@@ -413,10 +420,11 @@ export function registerSignalingHandlers(
 
       // Guest já aprovado antes (reload/queda): volta direto para a chamada
       if (auth.admissionKey && room.admittedKeys.has(auth.admissionKey)) {
-        // Mesmo paciente voltando com outro socket: libera a vaga antiga
+        // Mesmo paciente voltando com outro socket: libera a vaga antiga,
+        // mesmo que o servidor ainda não tenha notado a queda dela
         for (const p of [...room.participants.values()]) {
-          if (p.removalTimer && p.admissionKey === auth.admissionKey) {
-            removeParticipant(sessionId, room, p.socketId);
+          if (p.admissionKey === auth.admissionKey) {
+            replaceParticipant(sessionId, room, p.socketId);
           }
         }
         if (isRoomFull(room)) {

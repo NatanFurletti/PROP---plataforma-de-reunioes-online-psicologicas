@@ -166,8 +166,11 @@ Paciente (novo)            Servidor (Signaling)         Psicólogo (Host)
   não tira o participante da sala na hora: ele mantém a vaga por
   `RECONNECT_GRACE_MS` (padrão 2 min) antes de os outros receberem
   `user-left`. Com `connectionStateRecovery`, o socket volta com o mesmo
-  id e a chamada segue sem renegociar; se voltar com outro socket (mesmo
-  host, ou paciente com a mesma `admissionKey`), a vaga antiga é liberada.
+  id e a chamada segue sem renegociar. Se voltar com outro socket (mesmo
+  host, ou paciente com a mesma `admissionKey`), o novo **sempre** assume a
+  vaga, mesmo que o servidor ainda não tenha notado a queda do antigo (o
+  ping timeout leva ~45s). O antigo, se vivo, recebe `session-replaced` e
+  é desconectado.
   Sair de propósito (`socket.disconnect()`) continua removendo na hora.
 - Ao voltar a ficar visível, o cliente reconecta o socket sem esperar o
   backoff, recaptura câmera/microfone encerrados pelo sistema

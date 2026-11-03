@@ -144,6 +144,8 @@ export const useWebRTC = ({
   const localStreamRef = useRef<MediaStream | null>(null);
   const peersRef = useRef(new Map<string, PeerEntry>());
   const admissionKeyRef = useRef(admissionKey);
+  // Esta aba foi substituída por outra conexão da mesma pessoa
+  const replacedRef = useRef(false);
 
   // Referências estáveis para callbacks, evitando re-registro de handlers
   const callbacksRef = useRef({
@@ -442,7 +444,7 @@ export const useWebRTC = ({
   // esperar o backoff), recaptura mídia encerrada e reanima as conexões.
   useEffect(() => {
     const onResume = () => {
-      if (document.visibilityState !== "visible") return;
+      if (document.visibilityState !== "visible" || replacedRef.current) return;
       const socket = socketRef.current;
       if (socket && !socket.connected) socket.connect();
       void restoreLocalTracks();
@@ -688,6 +690,15 @@ export const useWebRTC = ({
         if (!entry?.isOfferer) return;
         entry.reconnectAttempts = 0;
         void sendOffer(from, true);
+      });
+
+      // A mesma pessoa entrou de novo em outra aba/dispositivo: esta
+      // conexão foi substituída e não deve tentar voltar
+      socket.on("session-replaced", () => {
+        if (cancelled) return;
+        replacedRef.current = true;
+        closeAllPeers();
+        reportError(null, "Session opened in another tab or device");
       });
 
       socket.on("user-left", ({ peerId }: { peerId: string }) => {
