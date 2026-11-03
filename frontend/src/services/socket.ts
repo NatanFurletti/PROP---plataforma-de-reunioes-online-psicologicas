@@ -74,7 +74,9 @@ export const initializeSocket = ({
     reconnection: true,
     reconnectionDelay: 1000,
     reconnectionDelayMax: 5000,
-    reconnectionAttempts: 5,
+    // Sem limite: no celular a página pode ficar minutos em segundo plano.
+    // Desistir após poucas tentativas deixava a chamada morta na volta.
+    reconnectionAttempts: Infinity,
   });
 
   socketInstance.on("connect", () => {

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import {
   createFakeStream,
+  createFakeTrack,
   createdPeerConnections,
   installWebRTCMocks,
   stubGetUserMedia,
@@ -14,7 +15,9 @@ const socketMock = {
   on: vi.fn((event: string, cb: (payload?: unknown) => void) => {
     handlers.set(event, cb);
   }),
+  connect: vi.fn(),
   connected: false,
+  recovered: false,
   id: "socket-test",
 };
 
@@ -49,6 +52,9 @@ beforeEach(() => {
   handlers.clear();
   socketMock.emit.mockClear();
   socketMock.on.mockClear();
+  socketMock.connect.mockClear();
+  socketMock.connected = false;
+  socketMock.recovered = false;
   installWebRTCMocks();
   stubGetUserMedia(async () => createFakeStream());
 });
@@ -464,5 +470,120 @@ describe("useWebRTC — reconexão", () => {
     expect(result.current.connectionState).toBe("failed");
     expect(onError).toHaveBeenCalledWith(expect.any(Error));
     vi.useRealTimers();
+  });
+});
+
+describe("useWebRTC — volta do segundo plano", () => {
+  function setVisibility(state: "visible" | "hidden") {
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => state,
+    });
+  }
+
+  async function goForeground() {
+    setVisibility("visible");
+    await act(async () => {
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+  }
+
+  beforeEach(() => setVisibility("visible"));
+
+  it("socket recuperado mantém as conexões P2P", async () => {
+    const { result } = renderHook(() => useWebRTC(GUEST_OPTS));
+    await waitFor(() => expect(result.current.localStream).not.toBeNull());
+    await act(async () => serverEmit("connect"));
+    await act(async () => serverEmit("room-peers", { peers: [HOST_PEER] }));
+    const pc = createdPeerConnections[0];
+
+    socketMock.recovered = true;
+    await act(async () => serverEmit("connect"));
+
+    expect(pc.close).not.toHaveBeenCalled();
+    expect(result.current.participants).toHaveLength(1);
+    expect(result.current.admissionStatus).toBe("admitted");
+    expect(socketMock.emit.mock.calls.filter(([e]) => e === "join-room")).toHaveLength(2);
+  });
+
+  it("reconexão sem recuperação descarta as conexões antigas", async () => {
+    const { result } = renderHook(() => useWebRTC(GUEST_OPTS));
+    await waitFor(() => expect(result.current.localStream).not.toBeNull());
+    await act(async () => serverEmit("connect"));
+    await act(async () => serverEmit("room-peers", { peers: [HOST_PEER] }));
+    const pc = createdPeerConnections[0];
+
+    await act(async () => serverEmit("connect"));
+
+    expect(pc.close).toHaveBeenCalled();
+    expect(result.current.admissionStatus).toBe("pending");
+  });
+
+  it("reconecta o socket na hora ao voltar a ficar visível", async () => {
+    const { result } = renderHook(() => useWebRTC(HOST_OPTS));
+    await waitFor(() => expect(result.current.localStream).not.toBeNull());
+
+    await goForeground();
+    expect(socketMock.connect).toHaveBeenCalled();
+  });
+
+  it("quem fez a offer reinicia o ICE de conexão caída ao voltar", async () => {
+    const { result } = renderHook(() => useWebRTC(GUEST_OPTS));
+    await waitFor(() => expect(result.current.localStream).not.toBeNull());
+    await act(async () => serverEmit("room-peers", { peers: [HOST_PEER] }));
+    const pc = createdPeerConnections[0];
+    pc.connectionState = "failed";
+    pc.createOffer.mockClear();
+
+    await goForeground();
+    expect(pc.createOffer).toHaveBeenCalledWith({ iceRestart: true });
+  });
+
+  it("quem recebeu a offer pede o ICE restart ao outro lado", async () => {
+    const { result } = renderHook(() => useWebRTC(HOST_OPTS));
+    await waitFor(() => expect(result.current.localStream).not.toBeNull());
+    await act(async () =>
+      serverEmit("offer", { from: "guest-1", offer: { type: "offer", sdp: "x" } }),
+    );
+    createdPeerConnections[0].connectionState = "disconnected";
+
+    await goForeground();
+    expect(socketMock.emit).toHaveBeenCalledWith("restart-ice", { to: "guest-1" });
+  });
+
+  it("atende ao pedido de restart-ice quando é quem fez a offer", async () => {
+    const { result } = renderHook(() => useWebRTC(GUEST_OPTS));
+    await waitFor(() => expect(result.current.localStream).not.toBeNull());
+    await act(async () => serverEmit("room-peers", { peers: [HOST_PEER] }));
+    const pc = createdPeerConnections[0];
+    pc.createOffer.mockClear();
+
+    await act(async () => serverEmit("restart-ice", { from: HOST_PEER.peerId }));
+    expect(pc.createOffer).toHaveBeenCalledWith({ iceRestart: true });
+  });
+
+  it("recaptura a câmera encerrada pelo sistema e troca o track na conexão", async () => {
+    const original = createFakeStream();
+    const getUserMedia = stubGetUserMedia(async () => original);
+    const { result } = renderHook(() => useWebRTC(GUEST_OPTS));
+    await waitFor(() => expect(result.current.localStream).not.toBeNull());
+    await act(async () => serverEmit("room-peers", { peers: [HOST_PEER] }));
+
+    // Câmera desligada pelo usuário e depois encerrada pelo sistema
+    act(() => result.current.toggleCamera());
+    const oldVideo = original.tracks[1];
+    oldVideo.readyState = "ended";
+
+    const newVideo = createFakeTrack("video");
+    getUserMedia.mockImplementationOnce(async () => createFakeStream([newVideo]));
+
+    await goForeground();
+
+    await waitFor(() => expect(result.current.localStream).not.toBe(original));
+    expect(getUserMedia).toHaveBeenLastCalledWith({ audio: false, video: expect.anything() });
+    const sender = createdPeerConnections[0].getSenders().find((s) => s.track?.kind === "video");
+    expect(sender?.replaceTrack).toHaveBeenCalledWith(newVideo);
+    expect(newVideo.enabled).toBe(false);
+    expect(result.current.localStream?.getTracks()).toEqual([original.tracks[0], newVideo]);
   });
 });

@@ -22,14 +22,20 @@ export function createFakeTrack(kind: "audio" | "video"): FakeTrack {
   return track;
 }
 
-export function createFakeStream(): MediaStream & { tracks: FakeTrack[] } {
-  const tracks = [createFakeTrack("audio"), createFakeTrack("video")];
+export function createFakeStream(
+  tracks: FakeTrack[] = [createFakeTrack("audio"), createFakeTrack("video")],
+): MediaStream & { tracks: FakeTrack[] } {
   return {
     tracks,
     getTracks: () => tracks,
     getAudioTracks: () => tracks.filter((t) => t.kind === "audio"),
     getVideoTracks: () => tracks.filter((t) => t.kind === "video"),
   } as unknown as MediaStream & { tracks: FakeTrack[] };
+}
+
+export interface FakeSender {
+  track: FakeTrack | null;
+  replaceTrack: ReturnType<typeof vi.fn>;
 }
 
 export interface FakePeerConnection {
@@ -42,6 +48,7 @@ export interface FakePeerConnection {
   onconnectionstatechange: (() => void) | null;
   oniceconnectionstatechange: (() => void) | null;
   addTrack: ReturnType<typeof vi.fn>;
+  getSenders: () => FakeSender[];
   createOffer: ReturnType<typeof vi.fn>;
   createAnswer: ReturnType<typeof vi.fn>;
   setLocalDescription: ReturnType<typeof vi.fn>;
@@ -68,7 +75,18 @@ export function installWebRTCMocks(): void {
     onconnectionstatechange: (() => void) | null = null;
     oniceconnectionstatechange: (() => void) | null = null;
 
-    addTrack = vi.fn();
+    senders: FakeSender[] = [];
+    addTrack = vi.fn((track: FakeTrack) => {
+      const sender: FakeSender = {
+        track,
+        replaceTrack: vi.fn(async (next: FakeTrack) => {
+          sender.track = next;
+        }),
+      };
+      this.senders.push(sender);
+      return sender;
+    });
+    getSenders = () => this.senders;
     createOffer = vi.fn(async () => ({ type: "offer", sdp: "fake-offer" }));
     createAnswer = vi.fn(async () => ({ type: "answer", sdp: "fake-answer" }));
     setLocalDescription = vi.fn(async (desc: unknown) => {
@@ -92,6 +110,13 @@ export function installWebRTCMocks(): void {
   }
 
   vi.stubGlobal("RTCPeerConnection", MockRTCPeerConnection);
+  // jsdom também não tem MediaStream
+  vi.stubGlobal(
+    "MediaStream",
+    function FakeMediaStream(tracks: FakeTrack[] = []) {
+      return createFakeStream(tracks);
+    },
+  );
 }
 
 export function stubGetUserMedia(

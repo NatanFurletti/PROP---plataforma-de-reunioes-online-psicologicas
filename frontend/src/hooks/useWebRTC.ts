@@ -73,6 +73,11 @@ interface PeerEntry {
 
 const MAX_RECONNECT_ATTEMPTS = 3;
 
+const VIDEO_CONSTRAINTS: MediaTrackConstraints = {
+  width: { ideal: 1280 },
+  height: { ideal: 720 },
+};
+
 function buildIceServers(): RTCIceServer[] {
   const iceServers: RTCIceServer[] = [
     { urls: "stun:stun.l.google.com:19302" },
@@ -314,6 +319,108 @@ export const useWebRTC = ({
     setMediaState("idle");
   }, [role]);
 
+  // Reanima conexões P2P que caíram (ex.: o celular ficou em segundo
+  // plano). Quem criou a offer faz o ICE restart; o outro lado pede.
+  const recoverPeers = useCallback(() => {
+    const socket = socketRef.current;
+    if (!socket) return;
+    for (const [peerId, entry] of peersRef.current) {
+      const state = entry.pc.connectionState;
+      if (state !== "failed" && state !== "disconnected") continue;
+      entry.reconnectAttempts = 0;
+      upsertParticipant(peerId, { connectionState: "reconnecting" });
+      if (entry.isOfferer) {
+        void sendOffer(peerId, true);
+      } else {
+        socket.emit("restart-ice", { to: peerId });
+      }
+    }
+  }, [upsertParticipant, sendOffer]);
+
+  // O sistema pode encerrar a câmera/microfone enquanto a página está em
+  // segundo plano (ou outro app pega a câmera). Na volta, captura de novo
+  // e troca o track nas conexões, sem renegociar.
+  const restoringRef = useRef(false);
+  const restoreLocalTracks = useCallback(async () => {
+    const stream = localStreamRef.current;
+    if (!stream || restoringRef.current) return;
+    if (document.visibilityState !== "visible") return;
+    const ended = stream.getTracks().filter((t) => t.readyState === "ended");
+    if (ended.length === 0) return;
+
+    restoringRef.current = true;
+    try {
+      const fresh = await navigator.mediaDevices.getUserMedia({
+        audio: ended.some((t) => t.kind === "audio"),
+        video: ended.some((t) => t.kind === "video") ? VIDEO_CONSTRAINTS : false,
+      });
+      // A chamada acabou enquanto esperava a permissão
+      if (localStreamRef.current !== stream) {
+        fresh.getTracks().forEach((t) => t.stop());
+        return;
+      }
+
+      const replacements = fresh.getTracks();
+      for (const track of replacements) {
+        const old = ended.find((t) => t.kind === track.kind);
+        // Mantém o estado de mudo / câmera desligada escolhido pelo usuário
+        if (old) track.enabled = old.enabled;
+        watchTrack(track);
+        for (const entry of peersRef.current.values()) {
+          const senders = entry.pc.getSenders();
+          const sender =
+            senders.find((s) => s.track === old) ??
+            senders.find((s) => s.track?.kind === track.kind);
+          await sender?.replaceTrack(track);
+        }
+      }
+
+      const next = new MediaStream([
+        ...stream.getTracks().filter((t) => t.readyState !== "ended"),
+        ...replacements,
+      ]);
+      localStreamRef.current = next;
+      setLocalStream(next);
+    } catch (err) {
+      reportError(err, "Failed to access media devices");
+    } finally {
+      restoringRef.current = false;
+    }
+    // watchTrack é estável (usa ref)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reportError]);
+
+  const restoreRef = useRef(restoreLocalTracks);
+  useEffect(() => {
+    restoreRef.current = restoreLocalTracks;
+  }, [restoreLocalTracks]);
+  // stop() não dispara "ended": isto só roda quando o sistema encerra o track
+  function watchTrack(track: MediaStreamTrack): void {
+    track.onended = () => {
+      void restoreRef.current();
+    };
+  }
+
+  // Volta do segundo plano / rede voltou: reconecta o socket na hora (sem
+  // esperar o backoff), recaptura mídia encerrada e reanima as conexões.
+  useEffect(() => {
+    const onResume = () => {
+      if (document.visibilityState !== "visible") return;
+      const socket = socketRef.current;
+      if (socket && !socket.connected) socket.connect();
+      void restoreLocalTracks();
+      recoverPeers();
+    };
+    document.addEventListener("visibilitychange", onResume);
+    window.addEventListener("online", onResume);
+    window.addEventListener("pageshow", onResume);
+    return () => {
+      document.removeEventListener("visibilitychange", onResume);
+      window.removeEventListener("online", onResume);
+      window.removeEventListener("pageshow", onResume);
+    };
+  }, [restoreLocalTracks, recoverPeers]);
+
   useEffect(() => {
     let cancelled = false;
 
@@ -323,7 +430,7 @@ export const useWebRTC = ({
       try {
         stream = await navigator.mediaDevices.getUserMedia({
           audio: true,
-          video: { width: { ideal: 1280 }, height: { ideal: 720 } },
+          video: VIDEO_CONSTRAINTS,
         });
       } catch (err) {
         if (cancelled) return;
@@ -338,6 +445,7 @@ export const useWebRTC = ({
       }
 
       localStreamRef.current = stream;
+      stream.getTracks().forEach(watchTrack);
       setLocalStream(stream);
       setMediaState("ready");
 
@@ -357,8 +465,16 @@ export const useWebRTC = ({
       let hasConnected = false;
 
       const joinRoom = () => {
-        // Reconexão do socket gera um novo id: as conexões antigas não
-        // valem mais e serão renegociadas a partir do novo join.
+        if (hasConnected && socket.recovered) {
+          // Socket recuperado (mesmo id, ex.: voltou do segundo plano): as
+          // conexões P2P continuam valendo. O join só confirma a volta ao
+          // servidor; depois tenta reanimar as conexões que caíram.
+          socket.emit("join-room");
+          recoverPeers();
+          return;
+        }
+        // Reconexão sem recuperação gera um novo id: as conexões antigas
+        // não valem mais e serão renegociadas a partir do novo join.
         if (hasConnected) {
           closeAllPeers();
           if (role === "guest") setAdmissionStatus("pending");
@@ -425,6 +541,9 @@ export const useWebRTC = ({
         ({ peers }: { peers: { peerId: string; role: Role; name: string }[] }) => {
           if (cancelled) return;
           setAdmissionStatus("admitted");
+          // room-peers é a foto completa da sala na entrada: conexões que
+          // sobraram de antes (ex.: tolerância expirou) não valem mais
+          closeAllPeers();
           for (const peer of peers) {
             upsertParticipant(peer.peerId, {
               role: peer.role,
@@ -505,6 +624,15 @@ export const useWebRTC = ({
           }
         },
       );
+
+      // O outro lado pediu um ICE restart (só quem criou a offer faz)
+      socket.on("restart-ice", ({ from }: { from: string }) => {
+        if (cancelled) return;
+        const entry = peersRef.current.get(from);
+        if (!entry?.isOfferer) return;
+        entry.reconnectAttempts = 0;
+        void sendOffer(from, true);
+      });
 
       socket.on("user-left", ({ peerId }: { peerId: string }) => {
         if (!cancelled) closePeer(peerId);

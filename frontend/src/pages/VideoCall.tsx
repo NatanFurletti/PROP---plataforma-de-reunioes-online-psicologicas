@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from "react";
 import { Navigate, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { ControlButton } from "../components/ControlButton";
 import { VideoTile } from "../components/VideoTile";
+import { useWakeLock } from "../hooks/useWakeLock";
 import { useWebRTC, type RemoteParticipant } from "../hooks/useWebRTC";
 import { healthService } from "../services/api";
 
@@ -171,6 +172,8 @@ const VideoCallInner: React.FC<VideoCallInnerProps> = ({
     onRoomFull: handleRoomFull,
     onError: handleError,
   });
+
+  useWakeLock(true);
 
   useEffect(() => {
     const timer = setInterval(() => {
