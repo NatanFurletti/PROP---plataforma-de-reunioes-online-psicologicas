@@ -65,6 +65,9 @@ export interface FakePeerConnection {
   setRemoteDescription: ReturnType<typeof vi.fn>;
   addIceCandidate: ReturnType<typeof vi.fn>;
   close: ReturnType<typeof vi.fn>;
+  getStats: ReturnType<typeof vi.fn>;
+  // Quadros de vídeo recebidos, informados por getStats
+  framesDecoded: number;
   // Helpers de teste
   emitConnectionState: (state: string) => void;
 }
@@ -123,6 +126,13 @@ export function installWebRTCMocks(): void {
     close = vi.fn(() => {
       this.signalingState = "closed";
     });
+    framesDecoded = 0;
+    getStats = vi.fn(
+      async () =>
+        new Map([
+          ["in-video", { type: "inbound-rtp", kind: "video", framesDecoded: this.framesDecoded }],
+        ]),
+    );
 
     constructor() {
       createdPeerConnections.push(this as unknown as FakePeerConnection);

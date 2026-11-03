@@ -741,3 +741,41 @@ describe("useWebRTC — conexão substituída", () => {
     expect(socketMock.connect).not.toHaveBeenCalled();
   });
 });
+
+describe("useWebRTC — vídeo parado do par", () => {
+  async function guestWithHost() {
+    const hook = renderHook(() => useWebRTC(GUEST_OPTS));
+    await vi.waitFor(() => expect(hook.result.current.localStream).not.toBeNull());
+    await act(async () => serverEmit("room-peers", { peers: [HOST_PEER] }));
+    return { ...hook, pc: createdPeerConnections[0] };
+  }
+
+  it("marca o vídeo como chegando e depois parado quando os quadros param", async () => {
+    vi.useFakeTimers();
+    const { result, pc } = await guestWithHost();
+    expect(result.current.participants[0].isVideoFlowing).toBe(false);
+
+    // Quadros chegando a cada checagem
+    for (let i = 0; i < 2; i++) {
+      pc.framesDecoded += 30;
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1_000);
+      });
+    }
+    expect(result.current.participants[0].isVideoFlowing).toBe(true);
+
+    // O par caiu / foi para o segundo plano: nenhum quadro novo
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(4_000);
+    });
+    expect(result.current.participants[0].isVideoFlowing).toBe(false);
+
+    // Voltou
+    pc.framesDecoded += 30;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_000);
+    });
+    expect(result.current.participants[0].isVideoFlowing).toBe(true);
+    vi.useRealTimers();
+  });
+});

@@ -22,6 +22,9 @@ export interface RemoteParticipant {
   name: string;
   stream: MediaStream | null;
   connectionState: ConnectionState;
+  // Quadros de vídeo chegando agora. false = sem câmera, vídeo parado (aba
+  // em segundo plano, queda) — a UI mostra um avatar em vez do quadro congelado
+  isVideoFlowing: boolean;
 }
 
 export interface WaitingGuest {
@@ -71,6 +74,10 @@ interface PeerEntry {
   reconnectAttempts: number;
   // Mídia recebida do par (montada a partir dos tracks de ontrack)
   remoteStream: MediaStream | null;
+  // Detecção de vídeo parado (via getStats)
+  framesDecoded: number;
+  lastFrameAt: number;
+  videoFlowing: boolean;
 }
 
 // Sender de um tipo de mídia, mesmo quando ainda não há track (ex.: entrou
@@ -89,6 +96,10 @@ function findSender(
 }
 
 const MAX_RECONNECT_ATTEMPTS = 3;
+
+// Sem quadro novo por este tempo, o vídeo do par é considerado parado
+const VIDEO_STALL_MS = 3000;
+const VIDEO_CHECK_INTERVAL_MS = 1000;
 
 const VIDEO_CONSTRAINTS: MediaTrackConstraints = {
   width: { ideal: 1280 },
@@ -190,6 +201,7 @@ export const useWebRTC = ({
               name: "Participante",
               stream: null,
               connectionState: "connecting",
+              isVideoFlowing: false,
               ...patch,
             },
           ];
@@ -255,6 +267,9 @@ export const useWebRTC = ({
         isOfferer,
         reconnectAttempts: 0,
         remoteStream: null,
+        framesDecoded: 0,
+        lastFrameAt: 0,
+        videoFlowing: false,
       };
       peersRef.current.set(peerId, entry);
 
@@ -809,6 +824,51 @@ export const useWebRTC = ({
     }
     void startCamera();
   }, [startCamera]);
+
+  // Vídeo travado: quando o par cai ou a aba dele vai para o segundo plano,
+  // o <video> fica no último quadro. Os contadores de quadros decodificados
+  // dizem se o vídeo ainda chega, independente do estado da conexão.
+  useEffect(() => {
+    let checking = false;
+    const check = async () => {
+      if (checking) return;
+      checking = true;
+      try {
+        for (const [peerId, entry] of peersRef.current) {
+          if (typeof entry.pc.getStats !== "function") continue;
+          let frames = 0;
+          let hasVideo = false;
+          try {
+            const report = await entry.pc.getStats();
+            report.forEach((stat: { type?: string; kind?: string; framesDecoded?: number }) => {
+              if (stat.type === "inbound-rtp" && stat.kind === "video") {
+                hasVideo = true;
+                frames += stat.framesDecoded ?? 0;
+              }
+            });
+          } catch {
+            continue;
+          }
+          // O par saiu ou foi substituído enquanto lia as estatísticas
+          if (peersRef.current.get(peerId) !== entry) continue;
+          const now = Date.now();
+          if (frames > entry.framesDecoded) {
+            entry.framesDecoded = frames;
+            entry.lastFrameAt = now;
+          }
+          const flowing = hasVideo && now - entry.lastFrameAt < VIDEO_STALL_MS;
+          if (flowing !== entry.videoFlowing) {
+            entry.videoFlowing = flowing;
+            upsertParticipant(peerId, { isVideoFlowing: flowing });
+          }
+        }
+      } finally {
+        checking = false;
+      }
+    };
+    const timer = setInterval(() => void check(), VIDEO_CHECK_INTERVAL_MS);
+    return () => clearInterval(timer);
+  }, [upsertParticipant]);
 
   // Estado geral da chamada, para o indicador visual
   const connectionState = useMemo<ConnectionState>(() => {

@@ -138,10 +138,17 @@ function gridColumns(count: number): string {
 }
 
 function participantLabel(p: RemoteParticipant): string {
-  const base = p.role === "host" ? "Psicólogo" : p.name;
-  if (p.connectionState === "reconnecting") return `${base} (reconectando...)`;
-  if (p.connectionState === "failed") return `${base} (sem conexão)`;
-  return base;
+  return p.role === "host" ? "Psicólogo" : p.name;
+}
+
+// Só mostra o vídeo quando ele está de fato chegando; caso contrário um
+// avatar com o motivo substitui o quadro congelado
+function participantStatus(p: RemoteParticipant): string | undefined {
+  if (p.connectionState === "reconnecting") return "Reconectando...";
+  if (p.connectionState === "failed") return "Sem conexão";
+  if (p.connectionState !== "connected") return "Conectando...";
+  if (!p.isVideoFlowing) return "Câmera pausada";
+  return undefined;
 }
 
 const VideoCallInner: React.FC<VideoCallInnerProps> = ({
@@ -398,6 +405,8 @@ const VideoCallInner: React.FC<VideoCallInnerProps> = ({
                 key={p.peerId}
                 stream={p.stream}
                 label={participantLabel(p)}
+                status={participantStatus(p)}
+                showVideo={participantStatus(p) === undefined}
                 isMuted={false}
                 videoRef={p.peerId === pipTarget?.peerId ? setPipVideo : undefined}
               />
