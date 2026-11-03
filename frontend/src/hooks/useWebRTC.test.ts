@@ -158,6 +158,19 @@ describe("useWebRTC — sala de espera", () => {
     expect(onAdmitted).toHaveBeenCalledWith("key-1");
   });
 
+  it("guest guarda a chave recebida já na sala de espera", async () => {
+    const onAdmissionKey = vi.fn();
+    const { result } = renderHook(() => useWebRTC({ ...GUEST_OPTS, onAdmissionKey }));
+    await waitFor(() => expect(result.current.localStream).not.toBeNull());
+
+    await act(async () => serverEmit("waiting-for-approval", { admissionKey: "key-1" }));
+    expect(onAdmissionKey).toHaveBeenCalledWith("key-1");
+
+    // A aprovação traz a mesma chave: não salva de novo
+    await act(async () => serverEmit("admitted", { admissionKey: "key-1" }));
+    expect(onAdmissionKey).toHaveBeenCalledTimes(1);
+  });
+
   it("guest recusado vai para 'denied'", async () => {
     const onAdmissionDenied = vi.fn();
     const { result } = renderHook(() =>

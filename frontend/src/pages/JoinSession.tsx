@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { sessionService } from "../services/api";
+import { loadGuestIdentity, saveGuestIdentity } from "../utils/guestIdentity";
 
 type PageState = "loading" | "invalid" | "expired" | "ready";
 
@@ -30,7 +31,15 @@ export const JoinSession: React.FC = () => {
     sessionService
       .validateSessionToken(token)
       .then((res) => {
-        setSessionData(res.data);
+        const data = res.data as SessionData;
+        // Já entrou por este link neste navegador: segue direto, com o
+        // mesmo nome (e sem nova aprovação, se já tinha sido aprovado)
+        const identity = loadGuestIdentity(data.sessionId);
+        if (identity && identity.accessToken === token) {
+          navigate(`/call/${data.sessionId}?role=guest`, { replace: true });
+          return;
+        }
+        setSessionData(data);
         setPageState("ready");
       })
       .catch((err: unknown) => {
@@ -41,7 +50,7 @@ export const JoinSession: React.FC = () => {
           setPageState("invalid");
         }
       });
-  }, [token]);
+  }, [token, navigate]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -51,14 +60,10 @@ export const JoinSession: React.FC = () => {
     }
     if (!sessionData || !token) return;
 
-    sessionStorage.setItem(
-      "patientSession",
-      JSON.stringify({
-        patientName: patientName.trim(),
-        accessToken: token,
-        sessionId: sessionData.sessionId,
-      }),
-    );
+    saveGuestIdentity(sessionData.sessionId, {
+      name: patientName.trim(),
+      accessToken: token,
+    });
 
     navigate(`/call/${sessionData.sessionId}?role=guest`);
   };

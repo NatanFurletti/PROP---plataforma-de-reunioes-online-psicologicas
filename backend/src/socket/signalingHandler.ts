@@ -26,7 +26,7 @@ interface ParticipantInfo {
   socketId: string;
   role: Role;
   name: string;
-  // Guest: chave de reentrada usada para entrar (identifica o mesmo paciente)
+  // Guest: chave do paciente (identifica a mesma pessoa entre conexões)
   admissionKey?: string;
   // Remoção agendada após uma queda involuntária (ver RECONNECT_GRACE_MS)
   removalTimer: NodeJS.Timeout | null;
@@ -36,15 +36,23 @@ interface ParticipantInfo {
 interface WaitingGuest {
   socketId: string;
   name: string;
+  admissionKey: string;
+}
+
+// Paciente conhecido pela sala. A chave é entregue no primeiro pedido de
+// entrada e fica guardada no navegador dele: ao voltar pelo mesmo link,
+// ele é reconhecido, mantém o nome e, se já foi aprovado, entra direto.
+interface KnownGuest {
+  name: string;
+  admitted: boolean;
 }
 
 // Estado de uma sala de sinalização
 interface RoomState {
   participants: Map<string, ParticipantInfo>; // key: socketId
   waiting: Map<string, WaitingGuest>; // key: socketId
-  // Chaves entregues a pacientes já aprovados. Permitem voltar à sala
-  // (reload da página, queda de rede) sem nova aprovação.
-  admittedKeys: Set<string>;
+  // Pacientes que já pediram para entrar, por chave
+  guests: Map<string, KnownGuest>;
   // Momento em que a sala ficou sem ninguém. null enquanto houver alguém.
   emptySince: number | null;
 }
@@ -83,6 +91,8 @@ const INTENTIONAL_DISCONNECT_REASONS = new Set([
 export const MAX_ROOM_PARTICIPANTS = env.MAX_ROOM_PARTICIPANTS;
 // Evita que um link vazado encha a lista de espera do psicólogo
 const MAX_WAITING_GUESTS = 20;
+// Pacientes diferentes que podem pedir entrada numa mesma sala
+const MAX_KNOWN_GUESTS = 100;
 const MAX_NAME_LENGTH = 60;
 
 // Dados validados anexados ao socket.data após o handshake
@@ -132,7 +142,7 @@ function getOrCreateRoom(sessionId: string): RoomState {
     room = {
       participants: new Map(),
       waiting: new Map(),
-      admittedKeys: new Set(),
+      guests: new Map(),
       emptySince: null,
     };
     rooms.set(sessionId, room);
@@ -277,14 +287,22 @@ export function registerSignalingHandlers(
         if (!accessToken || accessToken !== session.accessToken) {
           return next(new Error("Invalid access token"));
         }
-        const name = sanitizeName(handshake.name);
-        if (!name) {
-          return next(new Error("Invalid name"));
-        }
-        const admissionKey =
+        const providedKey =
           typeof handshake.admissionKey === "string"
             ? handshake.admissionKey
             : undefined;
+        // Paciente já conhecido pela sala: o nome é o do primeiro pedido.
+        // Assim a mesma pessoa não aparece com outro nome.
+        const known = providedKey
+          ? rooms.get(sessionId)?.guests.get(providedKey)
+          : undefined;
+        const name = known?.name ?? sanitizeName(handshake.name);
+        if (!name) {
+          return next(new Error("Invalid name"));
+        }
+        // Chave desconhecida (ex.: sala recriada após reinício do servidor)
+        // é descartada: o paciente recebe uma nova ao pedir entrada
+        const admissionKey = known ? providedKey : undefined;
         setAuth(socket, { sessionId, role, name, admissionKey });
       }
 
@@ -418,8 +436,11 @@ export function registerSignalingHandlers(
         return;
       }
 
-      // Guest já aprovado antes (reload/queda): volta direto para a chamada
-      if (auth.admissionKey && room.admittedKeys.has(auth.admissionKey)) {
+      const known = auth.admissionKey ? room.guests.get(auth.admissionKey) : undefined;
+
+      // Guest já aprovado antes (reload, queda, nova aba, voltou pelo
+      // link): volta direto para a chamada
+      if (auth.admissionKey && known?.admitted) {
         // Mesmo paciente voltando com outro socket: libera a vaga antiga,
         // mesmo que o servidor ainda não tenha notado a queda dela
         for (const p of [...room.participants.values()]) {
@@ -435,21 +456,57 @@ export function registerSignalingHandlers(
         return;
       }
 
+      // Mesmo paciente pedindo de novo (outra aba, reload na espera): o
+      // pedido novo substitui o antigo, sem duplicar na lista do psicólogo
+      let replacedWaiting = false;
+      if (auth.admissionKey && known) {
+        for (const w of [...room.waiting.values()]) {
+          if (w.admissionKey !== auth.admissionKey) continue;
+          room.waiting.delete(w.socketId);
+          replacedWaiting = true;
+          const oldSocket = io.sockets.sockets.get(w.socketId);
+          if (oldSocket) {
+            oldSocket.emit("session-replaced");
+            oldSocket.disconnect(true);
+          }
+        }
+      }
+
       if (room.waiting.size >= MAX_WAITING_GUESTS) {
         socket.emit("room-full", { error: "Waiting list is full" });
+        if (replacedWaiting) emitWaitingList(room);
         return;
       }
 
-      room.waiting.set(socket.id, { socketId: socket.id, name: auth.name });
-      room.emptySince = null;
-      socket.emit("waiting-for-approval");
+      // Primeiro pedido deste paciente: cria a chave que o identifica
+      if (!auth.admissionKey || !known) {
+        // Limita pacientes conhecidos para um link vazado não crescer o Map
+        if (room.guests.size >= MAX_KNOWN_GUESTS) {
+          socket.emit("room-full", { error: "Waiting list is full" });
+          return;
+        }
+        auth.admissionKey = randomUUID();
+        room.guests.set(auth.admissionKey, { name: auth.name, admitted: false });
+      }
 
-      const host = findHost(room);
-      if (host) {
-        io.to(host.socketId).emit("guest-waiting", {
-          guestId: socket.id,
-          name: auth.name,
-        });
+      room.waiting.set(socket.id, {
+        socketId: socket.id,
+        name: auth.name,
+        admissionKey: auth.admissionKey,
+      });
+      room.emptySince = null;
+      socket.emit("waiting-for-approval", { admissionKey: auth.admissionKey });
+
+      if (replacedWaiting) {
+        emitWaitingList(room);
+      } else {
+        const host = findHost(room);
+        if (host) {
+          io.to(host.socketId).emit("guest-waiting", {
+            guestId: socket.id,
+            name: auth.name,
+          });
+        }
       }
     });
 
@@ -482,8 +539,9 @@ export function registerSignalingHandlers(
         return;
       }
 
-      const admissionKey = randomUUID();
-      room.admittedKeys.add(admissionKey);
+      const admissionKey = waiting.admissionKey;
+      const known = room.guests.get(admissionKey);
+      if (known) known.admitted = true;
       guestAuth.admissionKey = admissionKey;
       guestSocket.emit("admitted", { admissionKey });
       admitToCall(guestSocket, room, guestAuth);

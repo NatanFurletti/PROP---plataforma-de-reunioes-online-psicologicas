@@ -41,6 +41,8 @@ interface UseWebRTCOptions {
   name?: string;
   // Guest: chave de reentrada de uma aprovação anterior
   admissionKey?: string;
+  // Guest: chave que identifica o paciente (entregue na espera e na aprovação)
+  onAdmissionKey?: (admissionKey: string) => void;
   onAdmitted?: (admissionKey: string) => void;
   onAdmissionDenied?: () => void;
   onSessionEnded?: () => void;
@@ -139,6 +141,7 @@ export const useWebRTC = ({
   accessToken,
   name,
   admissionKey,
+  onAdmissionKey,
   onAdmitted,
   onAdmissionDenied,
   onSessionEnded,
@@ -167,6 +170,7 @@ export const useWebRTC = ({
 
   // Referências estáveis para callbacks, evitando re-registro de handlers
   const callbacksRef = useRef({
+    onAdmissionKey,
     onAdmitted,
     onAdmissionDenied,
     onSessionEnded,
@@ -175,13 +179,14 @@ export const useWebRTC = ({
   });
   useEffect(() => {
     callbacksRef.current = {
+      onAdmissionKey,
       onAdmitted,
       onAdmissionDenied,
       onSessionEnded,
       onRoomFull,
       onError,
     };
-  }, [onAdmitted, onAdmissionDenied, onSessionEnded, onRoomFull, onError]);
+  }, [onAdmissionKey, onAdmitted, onAdmissionDenied, onSessionEnded, onRoomFull, onError]);
 
   const reportError = useCallback((err: unknown, fallback: string) => {
     callbacksRef.current.onError?.(toError(err, fallback));
@@ -590,15 +595,24 @@ export const useWebRTC = ({
       });
 
       // --- Sala de espera (guest) ---
-      socket.on("waiting-for-approval", () => {
-        if (!cancelled) setAdmissionStatus("waiting");
+      // A chave identifica o paciente: reconexões e novas visitas pelo
+      // link levam ela, para o servidor reconhecer a mesma pessoa
+      const rememberKey = (key: unknown) => {
+        if (typeof key !== "string" || key === admissionKeyRef.current) return;
+        admissionKeyRef.current = key;
+        updateSocketAuth({ admissionKey: key });
+        callbacksRef.current.onAdmissionKey?.(key);
+      };
+
+      socket.on("waiting-for-approval", (payload?: { admissionKey?: string }) => {
+        if (cancelled) return;
+        rememberKey(payload?.admissionKey);
+        setAdmissionStatus("waiting");
       });
 
       socket.on("admitted", ({ admissionKey: key }: { admissionKey: string }) => {
         if (cancelled) return;
-        admissionKeyRef.current = key;
-        // Reconexões automáticas do socket passam a levar a chave
-        updateSocketAuth({ admissionKey: key });
+        rememberKey(key);
         setAdmissionStatus("admitted");
         callbacksRef.current.onAdmitted?.(key);
       });

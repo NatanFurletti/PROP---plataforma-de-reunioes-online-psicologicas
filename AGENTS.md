@@ -130,7 +130,7 @@ sempre endereçada a um par (`to`) e entregue com o remetente (`from`).
 ```
 Paciente (novo)            Servidor (Signaling)         Psicólogo (Host)
      |--- join-room --------------->|                              |
-     |<-- waiting-for-approval -----|--- guest-waiting(nome) ----->|
+     |<-- waiting-for-approval(key)-|--- guest-waiting(nome) ----->|
      |                              |<-- admit-guest(guestId) -----|
      |<-- admitted(admissionKey) ---|                              |
      |<-- room-peers([pares]) ------|--- user-joined(peer) ------->|
@@ -148,9 +148,16 @@ Paciente (novo)            Servidor (Signaling)         Psicólogo (Host)
 - Somente o host admite/recusa pacientes e encerra a sessão (servidor revalida o role).
 - Um único host por sala. Limite total: `MAX_ROOM_PARTICIPANTS` (padrão 6).
   A malha P2P não escala bem além disso — acima disso, usar um SFU.
-- Ao ser admitido, o paciente recebe uma `admissionKey` (guardada no
-  `sessionStorage`); com ela, reload ou queda de rede voltam direto à
-  chamada, sem nova aprovação. A chave vale só enquanto a sala existir.
+- No primeiro pedido de entrada o paciente recebe uma `admissionKey`, que
+  a sala associa ao nome dele e, após a aprovação, marca como aprovada. O
+  frontend guarda nome + chave no `localStorage`, por sessão
+  (`utils/guestIdentity.ts`). Voltar pelo mesmo link (reload, nova aba,
+  navegador fechado, queda) não pede o nome de novo e, se já aprovado, entra
+  direto. Com a chave, o servidor usa o nome do primeiro pedido (o do
+  handshake é ignorado), e um novo pedido do mesmo paciente substitui o
+  anterior na espera — a mesma pessoa não entra duas vezes nem com outro
+  nome. A chave vale só enquanto a sala existir; outro navegador ou
+  dispositivo conta como pessoa nova e passa pela aprovação.
 - `session-ended` vai para todos (inclusive quem aguardava). O cliente que
   encerra/sai navega por conta própria — não espera resposta do servidor.
 
@@ -194,7 +201,7 @@ fixo — o segredo do frontend vai para o bundle.
 
 **Autenticação no Socket.IO (obrigatória):**
 - Middleware `io.use(...)` valida o handshake antes do `connection`.
-- Cliente envia `auth: { sessionId, role, accessToken?, name?, admissionKey?, hostToken? }` (guest exige `name`, 1–60 caracteres).
+- Cliente envia `auth: { sessionId, role, accessToken?, name?, admissionKey?, hostToken? }` (guest exige `name`, 1–60 caracteres, exceto com `admissionKey` já conhecida pela sala).
 - Host autentica com `hostToken`: JWT curto (5 min, `purpose: "host-socket"`, preso a uma sessão e à `tokenVersion`) emitido por `POST /sessions/:id/socket-token`. Em produção o frontend (Vercel) e o backend (Render) estão em domínios diferentes e o cookie de login não chega ao socket. Sem `hostToken`, o servidor aceita o cookie JWT (mesmo domínio, desenvolvimento). Em ambos os casos o psicólogo deve ser o dono da `Session`.
 - O `hostToken` não vale como login e o JWT de login não vale como `hostToken` (`verifyToken` rejeita tokens com `purpose`).
 - Guest autentica via `accessToken` (igual ao da `Session`).
@@ -347,7 +354,7 @@ virar um oráculo de e-mails cadastrados. Redefinir a senha incrementa
 | `answer` | Cliente → Servidor | `{ to, answer }` | Enviar SDP answer a um par |
 | `ice-candidate` | Cliente → Servidor | `{ to, candidate }` | Enviar ICE candidate a um par |
 | `session-end` | Host → Servidor | — (ack opcional) | Encerrar a sessão para todos |
-| `waiting-for-approval` | Servidor → Guest | `{}` | Paciente entrou na sala de espera |
+| `waiting-for-approval` | Servidor → Guest | `{ admissionKey }` | Paciente entrou na sala de espera (chave que o identifica) |
 | `admitted` | Servidor → Guest | `{ admissionKey }` | Paciente aprovado |
 | `admission-denied` | Servidor → Guest | `{}` | Paciente recusado |
 | `guest-waiting` | Servidor → Host | `{ guestId, name }` | Novo pedido de entrada |

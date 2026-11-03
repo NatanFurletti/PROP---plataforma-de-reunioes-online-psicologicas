@@ -6,42 +6,15 @@ import { usePictureInPicture } from "../hooks/usePictureInPicture";
 import { useWakeLock } from "../hooks/useWakeLock";
 import { useWebRTC, type RemoteParticipant } from "../hooks/useWebRTC";
 import { healthService } from "../services/api";
+import {
+  clearGuestIdentity,
+  loadGuestIdentity,
+  updateGuestIdentity,
+} from "../utils/guestIdentity";
 
 // Intervalo do ping que mantém o backend acordado (Render free dorme após
 // ~15 min sem requisições HTTP; o WebSocket sozinho pode não contar)
 const KEEP_ALIVE_MS = 4 * 60 * 1000;
-
-interface PatientSession {
-  patientName?: string;
-  accessToken?: string;
-  sessionId?: string;
-  admissionKey?: string;
-}
-
-const PATIENT_SESSION_KEY = "patientSession";
-
-function readPatientSession(): PatientSession | null {
-  try {
-    const raw = sessionStorage.getItem(PATIENT_SESSION_KEY);
-    if (!raw) return null;
-    return JSON.parse(raw) as PatientSession;
-  } catch {
-    return null;
-  }
-}
-
-// Guarda a chave de reentrada: um reload da página não exige nova aprovação
-function saveAdmissionKey(admissionKey: string): void {
-  try {
-    const current = readPatientSession() ?? {};
-    sessionStorage.setItem(
-      PATIENT_SESSION_KEY,
-      JSON.stringify({ ...current, admissionKey }),
-    );
-  } catch {
-    // sessionStorage indisponível — só perde a reentrada automática
-  }
-}
 
 // Mensagens amigáveis para erros conhecidos da sinalização/WebRTC
 function friendlyError(error: Error): string {
@@ -101,10 +74,10 @@ export const VideoCall: React.FC = () => {
 
   const role = rawRole as "host" | "guest";
 
-  // Guest: nome, accessToken e chave de reentrada vêm do sessionStorage
-  const patientSession = role === "guest" ? readPatientSession() : null;
-  const patientName = patientSession?.patientName ?? null;
-  const accessToken = patientSession?.accessToken;
+  // Guest: nome, accessToken e chave vêm da identidade salva neste navegador
+  const identity = role === "guest" && sessionId ? loadGuestIdentity(sessionId) : null;
+  const patientName = identity?.name ?? null;
+  const accessToken = identity?.accessToken;
 
   // Guest sem accessToken ou nome não pode entrar
   if (role === "guest" && (!accessToken || !patientName)) {
@@ -117,7 +90,7 @@ export const VideoCall: React.FC = () => {
       role={role}
       patientName={patientName}
       accessToken={accessToken}
-      admissionKey={patientSession?.admissionKey}
+      admissionKey={identity?.admissionKey}
     />
   );
 };
@@ -162,13 +135,22 @@ const VideoCallInner: React.FC<VideoCallInnerProps> = ({
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [showConfirmEnd, setShowConfirmEnd] = useState(false);
 
+  // Guarda a chave do paciente: voltar pelo link (nova aba, reload) não
+  // pede o nome de novo nem, depois de aprovado, nova aprovação
+  const saveAdmissionKey = useCallback(
+    (key: string) => updateGuestIdentity(sessionId, { admissionKey: key }),
+    [sessionId],
+  );
+
   const handleSessionEnded = useCallback(() => {
     if (role === "guest") {
+      // A sala acabou: a chave não vale mais
+      clearGuestIdentity(sessionId);
       navigate("/session-ended", { replace: true });
     } else {
       navigate("/dashboard", { replace: true });
     }
-  }, [navigate, role]);
+  }, [navigate, role, sessionId]);
 
   const handleError = useCallback((error: Error) => {
     setErrorMessage(friendlyError(error));
@@ -199,7 +181,7 @@ const VideoCallInner: React.FC<VideoCallInnerProps> = ({
     accessToken,
     name: patientName ?? undefined,
     admissionKey,
-    onAdmitted: saveAdmissionKey,
+    onAdmissionKey: saveAdmissionKey,
     onSessionEnded: handleSessionEnded,
     onRoomFull: handleRoomFull,
     onError: handleError,
@@ -373,6 +355,17 @@ const VideoCallInner: React.FC<VideoCallInnerProps> = ({
               <p className="font-semibold text-gray-900 break-words mb-3">
                 {guest.name}
               </p>
+              {/* Mesmo nome de quem já está na chamada: provavelmente a
+                  mesma pessoa em outro navegador ou dispositivo */}
+              {participants.some(
+                (p) =>
+                  p.role === "guest" &&
+                  p.name.trim().toLowerCase() === guest.name.trim().toLowerCase(),
+              ) && (
+                <p className="text-xs text-orange-600 -mt-2 mb-3">
+                  Já há alguém com este nome na chamada.
+                </p>
+              )}
               <div className="flex gap-2 justify-end">
                 <button
                   onClick={() => denyGuest(guest.guestId)}

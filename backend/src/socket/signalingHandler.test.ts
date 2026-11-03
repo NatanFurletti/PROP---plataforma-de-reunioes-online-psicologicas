@@ -514,6 +514,68 @@ describe("signaling — sala de espera e aprovação", () => {
   });
 });
 
+describe("signaling — mesmo paciente voltando pelo link", () => {
+  // Pede entrada e resolve com a chave recebida na sala de espera
+  async function requestEntry(
+    options: Partial<ConnectOptions> = {},
+  ): Promise<{ guest: ClientSocket; admissionKey: string }> {
+    const guest = makeClient({ role: "guest", accessToken: ACCESS_TOKEN, ...options });
+    await tryConnect(guest);
+    const waiting = waitFor<{ admissionKey: string }>(guest, "waiting-for-approval");
+    guest.emit("join-room");
+    const payload = await waiting;
+    if (!payload) throw new Error("Paciente não entrou na espera");
+    return { guest, admissionKey: payload.admissionKey };
+  }
+
+  it("a chave chega já na sala de espera e é a mesma depois da aprovação", async () => {
+    const host = await connectHost();
+    const request = waitFor<{ guestId: string }>(host, "guest-waiting");
+    const { guest, admissionKey } = await requestEntry();
+    expect(admissionKey).toEqual(expect.any(String));
+
+    const admitted = waitFor<{ admissionKey: string }>(guest, "admitted");
+    host.emit("admit-guest", { guestId: (await request)!.guestId });
+    expect((await admitted)?.admissionKey).toBe(admissionKey);
+  });
+
+  it("voltar com a chave mantém o nome do primeiro pedido", async () => {
+    const host = await connectHost();
+    const { guest, admissionKey } = await joinAndAdmit(host, "Maria");
+    const left = waitFor(host, "user-left");
+    guest.disconnect();
+    await left;
+
+    const joined = waitFor<PeerInfo>(host, "user-joined", 1000);
+    await connectAndJoin({
+      role: "guest",
+      accessToken: ACCESS_TOKEN,
+      name: "Outro Nome",
+      admissionKey,
+    });
+    expect((await joined)?.name).toBe("Maria");
+  });
+
+  it("novo pedido do mesmo paciente substitui o anterior na espera", async () => {
+    const host = await connectHost();
+    const first = await requestEntry({ name: "Maria" });
+
+    const replaced = waitFor(first.guest, "session-replaced");
+    const list = waitFor<{ guests: { guestId: string; name: string }[] }>(
+      host,
+      "waiting-list",
+    );
+    const second = await requestEntry({
+      name: "Maria 2",
+      admissionKey: first.admissionKey,
+    });
+
+    expect(await replaced).not.toBeNull();
+    expect(second.admissionKey).toBe(first.admissionKey);
+    expect((await list)?.guests).toEqual([{ guestId: second.guest.id, name: "Maria" }]);
+  });
+});
+
 describe("signaling — vários participantes", () => {
   it("permite mais de um paciente na mesma chamada", async () => {
     const host = await connectHost();
