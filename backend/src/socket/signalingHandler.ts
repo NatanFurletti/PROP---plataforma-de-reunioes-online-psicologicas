@@ -26,6 +26,10 @@ interface ParticipantInfo {
   socketId: string;
   role: Role;
   name: string;
+  // Guest: chave de reentrada usada para entrar (identifica o mesmo paciente)
+  admissionKey?: string;
+  // Remoção agendada após uma queda involuntária (ver RECONNECT_GRACE_MS)
+  removalTimer: NodeJS.Timeout | null;
 }
 
 // Paciente aguardando aprovação do psicólogo
@@ -50,6 +54,28 @@ interface RoomState {
 // todos caem sem encerrar.
 export const IDLE_ROOM_TIMEOUT_MS = 5 * 60 * 1000;
 const IDLE_SWEEP_INTERVAL_MS = 60 * 1000;
+
+// Tolerância para quedas involuntárias do socket. No celular, trocar de
+// app ou bloquear a tela congela a página e derruba o WebSocket, mas a
+// mídia P2P pode continuar (ou voltar com um ICE restart). Durante essa
+// janela o participante continua na sala e os outros não recebem
+// `user-left`; se o socket voltar via connection state recovery (mesmo
+// socket.id), a chamada segue sem renegociar.
+export const RECONNECT_GRACE_MS = env.RECONNECT_GRACE_MS;
+
+// Opções do Socket.IO que habilitam a recuperação de estado. O middleware
+// de autenticação roda de novo na reconexão (skipMiddlewares: false).
+export const CONNECTION_STATE_RECOVERY = {
+  maxDisconnectionDuration: RECONNECT_GRACE_MS,
+  skipMiddlewares: false,
+};
+
+// Motivos em que o socket saiu de propósito: remove da sala na hora
+const INTENTIONAL_DISCONNECT_REASONS = new Set([
+  "client namespace disconnect",
+  "server namespace disconnect",
+  "server shutting down",
+]);
 
 // Limite da sala (psicólogo incluso). A chamada é em malha P2P: cada
 // participante envia sua mídia para todos os outros, então o custo de
@@ -89,7 +115,15 @@ const rooms = new Map<string, RoomState>();
 
 // Estado global entre testes — sem isso um caso contamina o seguinte.
 export function __resetRooms(): void {
+  for (const room of rooms.values()) clearRemovalTimers(room);
   rooms.clear();
+}
+
+function clearRemovalTimers(room: RoomState): void {
+  for (const p of room.participants.values()) {
+    if (p.removalTimer) clearTimeout(p.removalTimer);
+    p.removalTimer = null;
+  }
 }
 
 function getOrCreateRoom(sessionId: string): RoomState {
@@ -260,6 +294,21 @@ export function registerSignalingHandlers(
     }
   });
 
+  // Tira um participante da sala e avisa os demais
+  function removeParticipant(sessionId: string, room: RoomState, socketId: string): void {
+    const participant = room.participants.get(socketId);
+    if (!participant) return;
+    if (participant.removalTimer) clearTimeout(participant.removalTimer);
+    room.participants.delete(socketId);
+    io.to(sessionId).emit("user-left", { peerId: socketId });
+
+    // Sala vazia não é removida na hora: alguém pode estar reconectando.
+    // O varredor de inatividade encerra depois do timeout.
+    if (room.participants.size === 0 && room.waiting.size === 0) {
+      room.emptySince = Date.now();
+    }
+  }
+
   // Coloca um socket como participante da chamada e dispara a negociação:
   // quem entra recebe a lista de quem já está (e cria as offers); os demais
   // recebem `user-joined` e aguardam a offer do recém-chegado.
@@ -273,7 +322,13 @@ export function registerSignalingHandlers(
     }));
 
     socket.join(sessionId);
-    room.participants.set(socket.id, { socketId: socket.id, role, name });
+    room.participants.set(socket.id, {
+      socketId: socket.id,
+      role,
+      name,
+      admissionKey: auth.admissionKey,
+      removalTimer: null,
+    });
     room.emptySince = null;
 
     socket.to(sessionId).emit("user-joined", { peerId: socket.id, role, name });
@@ -310,13 +365,26 @@ export function registerSignalingHandlers(
 
       const room = getOrCreateRoom(sessionId);
 
-      // Evita entrar duas vezes com o mesmo socket
-      if (room.participants.has(socket.id) || room.waiting.has(socket.id)) {
+      // Socket recuperado dentro da tolerância (mesmo socket.id): segue na
+      // chamada como estava, sem renegociar — só cancela a remoção.
+      const existing = room.participants.get(socket.id);
+      if (existing) {
+        if (existing.removalTimer) clearTimeout(existing.removalTimer);
+        existing.removalTimer = null;
         return;
       }
+      if (room.waiting.has(socket.id)) return;
+
+      // Socket recuperado depois que a tolerância expirou: a recuperação
+      // devolve as rooms do Socket.IO, mas ele já não é participante.
+      socket.leave(sessionId);
 
       if (role === "host") {
-        if (findHost(room)) {
+        const currentHost = findHost(room);
+        if (currentHost?.removalTimer) {
+          // O host caiu e voltou com outro socket: libera a vaga antiga
+          removeParticipant(sessionId, room, currentHost.socketId);
+        } else if (currentHost) {
           socket.emit("room-full", {
             error: "A host is already connected to this room",
           });
@@ -345,6 +413,12 @@ export function registerSignalingHandlers(
 
       // Guest já aprovado antes (reload/queda): volta direto para a chamada
       if (auth.admissionKey && room.admittedKeys.has(auth.admissionKey)) {
+        // Mesmo paciente voltando com outro socket: libera a vaga antiga
+        for (const p of [...room.participants.values()]) {
+          if (p.removalTimer && p.admissionKey === auth.admissionKey) {
+            removeParticipant(sessionId, room, p.socketId);
+          }
+        }
         if (isRoomFull(room)) {
           socket.emit("room-full", { error: "Room is full" });
           return;
@@ -425,7 +499,11 @@ export function registerSignalingHandlers(
     // offer / answer / ice-candidate: encaminhados a um par específico.
     // Só circulam entre participantes admitidos da mesma sala.
     // ----------------------------------------------------------------
-    function relay(event: "offer" | "answer" | "ice-candidate", data: object, to: unknown) {
+    function relay(
+      event: "offer" | "answer" | "ice-candidate" | "restart-ice",
+      data: object,
+      to: unknown,
+    ) {
       const auth = getAuth(socket);
       if (!auth) return;
       const room = rooms.get(auth.sessionId);
@@ -456,6 +534,12 @@ export function registerSignalingHandlers(
       },
     );
 
+    // restart-ice: quem não criou a offer pede ao outro lado um ICE
+    // restart (ex.: voltou do segundo plano com a conexão P2P caída)
+    socket.on("restart-ice", (payload: { to?: unknown }) => {
+      relay("restart-ice", {}, payload?.to);
+    });
+
     // ----------------------------------------------------------------
     // session-end: somente o host pode encerrar
     // ----------------------------------------------------------------
@@ -473,6 +557,7 @@ export function registerSignalingHandlers(
         for (const guestId of room.waiting.keys()) {
           io.to(guestId).emit("session-ended");
         }
+        clearRemovalTimers(room);
         rooms.delete(sessionId);
       }
 
@@ -494,18 +579,34 @@ export function registerSignalingHandlers(
     // ----------------------------------------------------------------
     // disconnect: participante ou paciente em espera desconectou
     // ----------------------------------------------------------------
-    socket.on("disconnect", () => {
+    socket.on("disconnect", (reason: string) => {
       const auth = getAuth(socket);
       if (!auth) return;
-      const room = rooms.get(auth.sessionId);
+      const { sessionId } = auth;
+      const room = rooms.get(sessionId);
       if (!room) return;
 
       if (room.waiting.delete(socket.id)) {
         emitWaitingList(room);
       }
 
-      if (room.participants.delete(socket.id)) {
-        io.to(auth.sessionId).emit("user-left", { peerId: socket.id });
+      const participant = room.participants.get(socket.id);
+      if (participant) {
+        if (INTENTIONAL_DISCONNECT_REASONS.has(reason)) {
+          removeParticipant(sessionId, room, socket.id);
+          return;
+        }
+        // Queda involuntária (app em segundo plano, troca de rede):
+        // mantém a vaga até a tolerância expirar
+        if (participant.removalTimer) clearTimeout(participant.removalTimer);
+        participant.removalTimer = setTimeout(() => {
+          participant.removalTimer = null;
+          if (rooms.get(sessionId) === room) {
+            removeParticipant(sessionId, room, socket.id);
+          }
+        }, RECONNECT_GRACE_MS);
+        participant.removalTimer.unref?.();
+        return;
       }
 
       // Sala vazia não é removida na hora: alguém pode estar reconectando.

@@ -9,6 +9,8 @@ process.env.JWT_SECRET = "test-secret-do-not-use-in-prod";
 process.env.JWT_EXPIRES_IN = "1h";
 // Limite baixo para testar a sala cheia sem abrir muitos clientes
 process.env.MAX_ROOM_PARTICIPANTS = "3";
+// Tolerância curta para testar a remoção de quem caiu sem sair
+process.env.RECONNECT_GRACE_MS = "400";
 
 const prismaMock = {
   psychologist: {
@@ -23,7 +25,7 @@ const prismaMock = {
 
 vi.mock("../prismaClient", () => ({ prisma: prismaMock }));
 
-const { registerSignalingHandlers, __resetRooms } = await import(
+const { registerSignalingHandlers, __resetRooms, CONNECTION_STATE_RECOVERY } = await import(
   "./signalingHandler"
 );
 
@@ -68,7 +70,9 @@ beforeEach(async () => {
   prismaMock.session.update.mockResolvedValue({ id: SESSION_ID });
 
   httpServer = createServer();
-  io = new Server(httpServer);
+  io = new Server(httpServer, {
+    connectionStateRecovery: CONNECTION_STATE_RECOVERY,
+  });
   registerSignalingHandlers(io, prismaMock as never);
 
   await new Promise<void>((resolve) => {
@@ -654,5 +658,115 @@ describe("signaling — encerramento de sessão", () => {
 
     expect(await ended).toBeNull();
     expect(prismaMock.session.update).not.toHaveBeenCalled();
+  });
+});
+
+// Simula o celular indo para segundo plano: o transporte cai sem o cliente
+// pedir para sair (o servidor vê "transport close", não um disconnect)
+function dropTransport(client: ClientSocket): Promise<void> {
+  return new Promise((resolve) => {
+    client.once("disconnect", () => resolve());
+    client.io.engine.close();
+  });
+}
+
+describe("signaling — quedas involuntárias (app em segundo plano)", () => {
+  it("mantém o participante durante a tolerância e só depois emite user-left", async () => {
+    const host = await connectHost();
+    const { guest } = await joinAndAdmit(host);
+    const guestId = guest.id;
+
+    const earlyLeft = waitFor(host, "user-left", 200);
+    await dropTransport(guest);
+    expect(await earlyLeft).toBeNull();
+
+    expect(await waitFor(host, "user-left", 1000)).toEqual({ peerId: guestId });
+  });
+
+  it("socket recuperado volta à chamada com o mesmo id, sem renegociar", async () => {
+    const host = await connectHost();
+    const { guest } = await joinAndAdmit(host);
+    const guestId = guest.id;
+
+    await dropTransport(guest);
+    const reconnected = tryConnect(guest);
+    guest.connect();
+    await reconnected;
+    expect(guest.recovered).toBe(true);
+    expect(guest.id).toBe(guestId);
+
+    const roomPeers = waitFor(guest, "room-peers", 200);
+    const joined = waitFor(host, "user-joined", 200);
+    guest.emit("join-room");
+    expect(await roomPeers).toBeNull();
+    expect(await joined).toBeNull();
+
+    // A remoção agendada foi cancelada
+    expect(await waitFor(host, "user-left", 700)).toBeNull();
+
+    // A sinalização segue funcionando entre os dois
+    const offer = waitFor(guest, "offer");
+    host.emit("offer", { to: guestId, offer: { type: "offer", sdp: "sdp" } });
+    expect(await offer).toEqual(expect.objectContaining({ from: host.id }));
+  });
+
+  it("paciente que volta com outro socket substitui a vaga antiga", async () => {
+    const host = await connectHost();
+    const { guest, admissionKey } = await joinAndAdmit(host);
+    const oldId = guest.id;
+    await dropTransport(guest);
+
+    const left = waitFor<{ peerId: string }>(host, "user-left");
+    const fresh = makeClient({
+      role: "guest",
+      accessToken: ACCESS_TOKEN,
+      name: "Maria",
+      admissionKey,
+    });
+    await tryConnect(fresh);
+    const roomPeers = waitFor<{ peers: PeerInfo[] }>(fresh, "room-peers");
+    fresh.emit("join-room");
+
+    expect(await left).toEqual({ peerId: oldId });
+    expect((await roomPeers)?.peers).toEqual([
+      { peerId: host.id, role: "host", name: "Psicólogo" },
+    ]);
+  });
+
+  it("host que volta com outro socket substitui o host antigo", async () => {
+    const host = await connectHost();
+    const { guest } = await joinAndAdmit(host);
+    const oldHostId = host.id;
+    await dropTransport(host);
+
+    const left = waitFor<{ peerId: string }>(guest, "user-left");
+    const fresh = makeClient({ role: "host", jwtCookie: hostJwt() });
+    await tryConnect(fresh);
+    const roomPeers = waitFor<{ peers: PeerInfo[] }>(fresh, "room-peers");
+    fresh.emit("join-room");
+
+    expect(await left).toEqual({ peerId: oldHostId });
+    expect((await roomPeers)?.peers).toEqual([
+      { peerId: guest.id, role: "guest", name: "Maria" },
+    ]);
+  });
+
+  it("sair de propósito continua removendo na hora", async () => {
+    const host = await connectHost();
+    const { guest } = await joinAndAdmit(host);
+    const guestId = guest.id;
+
+    const left = waitFor<{ peerId: string }>(host, "user-left", 200);
+    guest.disconnect();
+    expect(await left).toEqual({ peerId: guestId });
+  });
+
+  it("encaminha restart-ice ao destinatário", async () => {
+    const host = await connectHost();
+    const { guest } = await joinAndAdmit(host);
+
+    const restart = waitFor(host, "restart-ice");
+    guest.emit("restart-ice", { to: host.id });
+    expect(await restart).toEqual({ from: guest.id });
   });
 });

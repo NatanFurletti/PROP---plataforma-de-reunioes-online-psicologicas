@@ -7,7 +7,10 @@ import { createServer } from "http";
 import { Server as SocketIOServer } from "socket.io";
 import { ZodError } from "zod";
 import router from "./routes/index.js";
-import { registerSignalingHandlers } from "./socket/signalingHandler.js";
+import {
+  CONNECTION_STATE_RECOVERY,
+  registerSignalingHandlers,
+} from "./socket/signalingHandler.js";
 import { prisma } from "./prismaClient.js";
 import { env } from "./config/env.js";
 import { logger } from "./config/logger.js";
@@ -20,6 +23,9 @@ export const io = new SocketIOServer(httpServer, {
     origin: env.CLIENT_URL,
     credentials: true,
   },
+  // No celular, trocar de app derruba o WebSocket. A recuperação devolve o
+  // mesmo socket.id e entrega as mensagens perdidas durante a queda.
+  connectionStateRecovery: CONNECTION_STATE_RECOVERY,
 });
 
 export { prisma };

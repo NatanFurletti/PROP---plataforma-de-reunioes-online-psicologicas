@@ -162,6 +162,20 @@ Paciente (novo)            Servidor (Signaling)         Psicólogo (Host)
   periódico, que marca a sessão como `COMPLETED`. A janela existe para
   tolerar reconexão; sem ela, uma queda dos dois lados deixaria a sessão
   presa em `IN_PROGRESS`.
+- Queda involuntária do socket (celular em segundo plano, troca de rede)
+  não tira o participante da sala na hora: ele mantém a vaga por
+  `RECONNECT_GRACE_MS` (padrão 2 min) antes de os outros receberem
+  `user-left`. Com `connectionStateRecovery`, o socket volta com o mesmo
+  id e a chamada segue sem renegociar; se voltar com outro socket (mesmo
+  host, ou paciente com a mesma `admissionKey`), a vaga antiga é liberada.
+  Sair de propósito (`socket.disconnect()`) continua removendo na hora.
+- Ao voltar a ficar visível, o cliente reconecta o socket sem esperar o
+  backoff, recaptura câmera/microfone encerrados pelo sistema
+  (`replaceTrack`) e faz ICE restart nas conexões caídas. Quem não criou a
+  offer pede o restart com `restart-ice`.
+- Limite da plataforma: navegadores mobile suspendem a **câmera** quando a
+  página sai da tela (privacidade do iOS/Android). O vídeo congela para o
+  outro lado e volta sozinho; só um app nativo contorna isso.
 
 **TURN/STUN:** o `docker-compose` sobe um `coturn` local. Sem TURN, pares
 atrás de NAT simétrico não conseguem estabelecer a conexão P2P. Em
@@ -335,6 +349,7 @@ virar um oráculo de e-mails cadastrados. Redefinir a senha incrementa
 | `offer` / `answer` / `ice-candidate` | Servidor → Cliente | `{ from, ... }` | Sinalização vinda de um par |
 | `room-full` | Servidor → Cliente | `{ error }` | Sala cheia ou host duplicado |
 | `session-ended` | Servidor → Cliente | `{}` | Sessão encerrada pelo host |
+| `restart-ice` | Cliente ↔ Servidor | `{ to }` / `{ from }` | Pede ao autor da offer um ICE restart |
 
 ---
 

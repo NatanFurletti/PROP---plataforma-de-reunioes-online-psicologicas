@@ -22,4 +22,10 @@ export const env = {
   TRUST_PROXY: Math.max(0, Number(process.env.TRUST_PROXY ?? 0) || 0),
   // Máximo de pessoas na chamada, psicólogo incluso (malha P2P)
   MAX_ROOM_PARTICIPANTS: Math.max(2, Number(process.env.MAX_ROOM_PARTICIPANTS ?? 6) || 6),
+  // Quanto tempo quem caiu sem sair (ex.: celular em segundo plano) mantém
+  // a vaga na sala antes de os outros receberem `user-left`
+  RECONNECT_GRACE_MS: Math.max(
+    100,
+    Number(process.env.RECONNECT_GRACE_MS ?? 120_000) || 120_000,
+  ),
 };
