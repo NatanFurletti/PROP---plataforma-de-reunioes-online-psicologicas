@@ -587,3 +587,100 @@ describe("useWebRTC — volta do segundo plano", () => {
     expect(result.current.localStream?.getTracks()).toEqual([original.tracks[0], newVideo]);
   });
 });
+
+describe("useWebRTC — câmera indisponível", () => {
+  function audioOnlyStream() {
+    return createFakeStream([createFakeTrack("audio")]);
+  }
+
+  it("entra só com áudio quando a câmera está ocupada", async () => {
+    const getUserMedia = stubGetUserMedia(async () => {
+      throw Object.assign(new Error("Could not start video source"), {
+        name: "NotReadableError",
+      });
+    });
+    getUserMedia
+      .mockImplementationOnce(async () => {
+        throw new Error("Could not start video source");
+      })
+      .mockImplementationOnce(async () => audioOnlyStream());
+    const onError = vi.fn();
+
+    const { result } = renderHook(() => useWebRTC({ ...GUEST_OPTS, onError }));
+    await waitFor(() => expect(result.current.localStream).not.toBeNull());
+
+    expect(getUserMedia).toHaveBeenLastCalledWith({ audio: true });
+    expect(result.current.connectionState).not.toBe("failed");
+    expect(result.current.isCameraOff).toBe(true);
+    expect(onError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringMatching(/audio only/) }),
+    );
+
+    // Reserva o canal de vídeo para ligar a câmera depois sem renegociar
+    await act(async () => serverEmit("room-peers", { peers: [HOST_PEER] }));
+    expect(createdPeerConnections[0].addTransceiver).toHaveBeenCalledWith(
+      "video",
+      expect.objectContaining({ direction: "sendrecv" }),
+    );
+  });
+
+  it("falha só quando nem o áudio funciona", async () => {
+    stubGetUserMedia(async () => {
+      throw new Error("Permission denied");
+    });
+    const { result } = renderHook(() => useWebRTC(HOST_OPTS));
+    await waitFor(() => expect(result.current.connectionState).toBe("failed"));
+  });
+
+  it("toggleCamera liga a câmera depois e envia pelo canal reservado", async () => {
+    const getUserMedia = stubGetUserMedia(async () => audioOnlyStream());
+    getUserMedia.mockImplementationOnce(async () => {
+      throw new Error("Could not start video source");
+    });
+    const { result } = renderHook(() => useWebRTC(GUEST_OPTS));
+    await waitFor(() => expect(result.current.localStream).not.toBeNull());
+    await act(async () => serverEmit("room-peers", { peers: [HOST_PEER] }));
+
+    const video = createFakeTrack("video");
+    getUserMedia.mockImplementationOnce(async () => createFakeStream([video]));
+    await act(async () => result.current.toggleCamera());
+
+    await waitFor(() => expect(result.current.isCameraOff).toBe(false));
+    const transceiver = createdPeerConnections[0].getTransceivers()[0];
+    expect(transceiver.sender.replaceTrack).toHaveBeenCalledWith(video);
+    expect(result.current.localStream?.getVideoTracks()).toEqual([video]);
+  });
+
+  it("quem responde sem câmera deixa o canal de vídeo como sendrecv", async () => {
+    stubGetUserMedia(async () => audioOnlyStream());
+    const { result } = renderHook(() => useWebRTC(HOST_OPTS));
+    await waitFor(() => expect(result.current.localStream).not.toBeNull());
+
+    // Simula o transceiver criado pela offer remota sem track local
+    await act(async () =>
+      serverEmit("offer", { from: "guest-1", offer: { type: "offer", sdp: "x" } }),
+    );
+    const pc = createdPeerConnections[0];
+    const transceiver = pc.addTransceiver("video", { direction: "recvonly" });
+    await act(async () =>
+      serverEmit("offer", { from: "guest-1", offer: { type: "offer", sdp: "y" } }),
+    );
+    expect(transceiver.direction).toBe("sendrecv");
+  });
+
+  it("junta track sem stream ao áudio que já chegou", async () => {
+    const { result } = renderHook(() => useWebRTC(GUEST_OPTS));
+    await waitFor(() => expect(result.current.localStream).not.toBeNull());
+    await act(async () => serverEmit("room-peers", { peers: [HOST_PEER] }));
+    const pc = createdPeerConnections[0];
+
+    const audio = createFakeTrack("audio");
+    const video = createFakeTrack("video");
+    await act(async () =>
+      pc.ontrack?.({ track: audio, streams: [createFakeStream([audio])] }),
+    );
+    await act(async () => pc.ontrack?.({ track: video, streams: [] }));
+
+    expect(result.current.participants[0].stream?.getTracks()).toEqual([audio, video]);
+  });
+});

@@ -38,6 +38,12 @@ export interface FakeSender {
   replaceTrack: ReturnType<typeof vi.fn>;
 }
 
+export interface FakeTransceiver {
+  direction: string;
+  sender: FakeSender;
+  receiver: { track: { kind: "audio" | "video" } };
+}
+
 export interface FakePeerConnection {
   connectionState: string;
   signalingState: string;
@@ -49,6 +55,10 @@ export interface FakePeerConnection {
   oniceconnectionstatechange: (() => void) | null;
   addTrack: ReturnType<typeof vi.fn>;
   getSenders: () => FakeSender[];
+  addTransceiver: Mock<
+    (kind: "audio" | "video", init?: { direction?: string }) => FakeTransceiver
+  >;
+  getTransceivers: () => FakeTransceiver[];
   createOffer: ReturnType<typeof vi.fn>;
   createAnswer: ReturnType<typeof vi.fn>;
   setLocalDescription: ReturnType<typeof vi.fn>;
@@ -87,6 +97,22 @@ export function installWebRTCMocks(): void {
       return sender;
     });
     getSenders = () => this.senders;
+    transceivers: FakeTransceiver[] = [];
+    addTransceiver = vi.fn((kind: "audio" | "video", init?: { direction?: string }) => {
+      const transceiver: FakeTransceiver = {
+        direction: init?.direction ?? "sendrecv",
+        sender: {
+          track: null,
+          replaceTrack: vi.fn(async (next: FakeTrack) => {
+            transceiver.sender.track = next;
+          }),
+        },
+        receiver: { track: { kind } },
+      };
+      this.transceivers.push(transceiver);
+      return transceiver;
+    });
+    getTransceivers = () => this.transceivers;
     createOffer = vi.fn(async () => ({ type: "offer", sdp: "fake-offer" }));
     createAnswer = vi.fn(async () => ({ type: "answer", sdp: "fake-answer" }));
     setLocalDescription = vi.fn(async (desc: unknown) => {

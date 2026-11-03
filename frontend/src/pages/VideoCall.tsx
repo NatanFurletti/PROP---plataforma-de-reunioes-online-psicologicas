@@ -46,7 +46,21 @@ function saveAdmissionKey(admissionKey: string): void {
 // Mensagens amigáveis para erros conhecidos da sinalização/WebRTC
 function friendlyError(error: Error): string {
   const message = error.message || "";
-  if (/Permission denied|NotAllowedError|media devices/i.test(message)) {
+  // DOMException traz o tipo em `name` (ex.: NotReadableError)
+  const detail = `${error.name} ${message}`;
+  if (/audio only/i.test(message)) {
+    return "Não foi possível usar a câmera (ela pode estar em uso por outro programa ou navegador). Você entrou só com áudio: feche o outro programa e toque em Câmera para ligá-la.";
+  }
+  if (/NotReadableError|Could not start video source|Failed to allocate videosource/i.test(detail)) {
+    return "A câmera está em uso por outro programa ou navegador. Feche-o e toque em Câmera para tentar de novo.";
+  }
+  if (/Could not start audio source/i.test(detail)) {
+    return "O microfone está em uso por outro programa. Feche-o e entre novamente.";
+  }
+  if (/NotFoundError|Requested device not found/i.test(detail)) {
+    return "Nenhuma câmera ou microfone foi encontrado neste dispositivo.";
+  }
+  if (/Permission denied|NotAllowedError|media devices/i.test(detail)) {
     return "Não foi possível acessar câmera e microfone. Verifique as permissões do navegador.";
   }
   if (/no longer available/i.test(message)) {

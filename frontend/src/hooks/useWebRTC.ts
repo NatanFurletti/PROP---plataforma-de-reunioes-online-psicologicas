@@ -69,6 +69,23 @@ interface PeerEntry {
   // Quem criou a offer é quem reinicia o ICE em caso de falha
   isOfferer: boolean;
   reconnectAttempts: number;
+  // Mídia recebida do par (montada a partir dos tracks de ontrack)
+  remoteStream: MediaStream | null;
+}
+
+// Sender de um tipo de mídia, mesmo quando ainda não há track (ex.: entrou
+// só com áudio e a câmera é ligada depois)
+function findSender(
+  pc: RTCPeerConnection,
+  kind: "audio" | "video",
+  old?: MediaStreamTrack,
+): RTCRtpSender | undefined {
+  const senders = pc.getSenders();
+  return (
+    (old ? senders.find((s) => s.track === old) : undefined) ??
+    senders.find((s) => s.track?.kind === kind) ??
+    pc.getTransceivers().find((t) => t.receiver.track?.kind === kind)?.sender
+  );
 }
 
 const MAX_RECONNECT_ATTEMPTS = 3;
@@ -228,14 +245,37 @@ export const useWebRTC = ({
         remoteDescriptionSet: false,
         isOfferer,
         reconnectAttempts: 0,
+        remoteStream: null,
       };
       peersRef.current.set(peerId, entry);
 
       const stream = localStreamRef.current;
       stream?.getTracks().forEach((track) => pc.addTrack(track, stream));
+      // Sem câmera (ou microfone), reserva o canal na offer: ligar depois
+      // é só um replaceTrack, sem renegociar
+      if (stream && isOfferer) {
+        for (const kind of ["audio", "video"] as const) {
+          if (!stream.getTracks().some((t) => t.kind === kind)) {
+            pc.addTransceiver(kind, { direction: "sendrecv", streams: [stream] });
+          }
+        }
+      }
 
       pc.ontrack = (event) => {
-        upsertParticipant(peerId, { stream: event.streams[0] ?? null });
+        const base = event.streams[0];
+        if (base && (!entry.remoteStream || entry.remoteStream === base)) {
+          entry.remoteStream = base;
+        } else {
+          // Track sem stream associado (canal reservado do outro lado):
+          // junta com o que já chegou para não perder o áudio
+          const tracks = new Set([
+            ...(entry.remoteStream?.getTracks() ?? []),
+            ...(base?.getTracks() ?? []),
+            event.track,
+          ]);
+          entry.remoteStream = new MediaStream([...tracks]);
+        }
+        upsertParticipant(peerId, { stream: entry.remoteStream });
       };
 
       pc.onicecandidate = (event) => {
@@ -367,11 +407,8 @@ export const useWebRTC = ({
         if (old) track.enabled = old.enabled;
         watchTrack(track);
         for (const entry of peersRef.current.values()) {
-          const senders = entry.pc.getSenders();
-          const sender =
-            senders.find((s) => s.track === old) ??
-            senders.find((s) => s.track?.kind === track.kind);
-          await sender?.replaceTrack(track);
+          const kind = track.kind === "audio" ? "audio" : "video";
+          await findSender(entry.pc, kind, old)?.replaceTrack(track);
         }
       }
 
@@ -427,16 +464,24 @@ export const useWebRTC = ({
     const setup = async () => {
       // 1. Câmera e microfone
       let stream: MediaStream;
+      let audioOnly = false;
       try {
         stream = await navigator.mediaDevices.getUserMedia({
           audio: true,
           video: VIDEO_CONSTRAINTS,
         });
       } catch (err) {
-        if (cancelled) return;
-        setMediaState("failed");
-        reportError(err, "Failed to access media devices");
-        return;
+        // Câmera ocupada por outro app/navegador (comum no Windows) ou
+        // ausente: entra só com áudio em vez de não entrar
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          audioOnly = true;
+        } catch {
+          if (cancelled) return;
+          setMediaState("failed");
+          reportError(err, "Failed to access media devices");
+          return;
+        }
       }
 
       if (cancelled) {
@@ -448,6 +493,10 @@ export const useWebRTC = ({
       stream.getTracks().forEach(watchTrack);
       setLocalStream(stream);
       setMediaState("ready");
+      if (audioOnly) {
+        setIsCameraOff(true);
+        reportError(null, "Camera unavailable: joined with audio only");
+      }
 
       // 2. Sinalização autenticada
       const socket = initializeSocket({
@@ -581,6 +630,13 @@ export const useWebRTC = ({
           try {
             await entry.pc.setRemoteDescription(offer);
             entry.remoteDescriptionSet = true;
+            // Canal sem track local (ex.: sem câmera) fica como recvonly;
+            // sendrecv permite ligar a câmera depois sem renegociar
+            for (const t of entry.pc.getTransceivers()) {
+              if (!t.sender.track && t.direction === "recvonly") {
+                t.direction = "sendrecv";
+              }
+            }
             await flushPendingCandidates(entry);
             const answer = await entry.pc.createAnswer();
             await entry.pc.setLocalDescription(answer);
@@ -670,13 +726,51 @@ export const useWebRTC = ({
     }
   }, []);
 
+  // Liga a câmera quando a chamada começou sem ela (estava ocupada)
+  const startingCameraRef = useRef(false);
+  const startCamera = useCallback(async () => {
+    const stream = localStreamRef.current;
+    if (!stream || startingCameraRef.current) return;
+    startingCameraRef.current = true;
+    try {
+      const fresh = await navigator.mediaDevices.getUserMedia({
+        video: VIDEO_CONSTRAINTS,
+      });
+      const track = fresh.getVideoTracks()[0];
+      if (!track) return;
+      if (localStreamRef.current !== stream) {
+        track.stop();
+        return;
+      }
+      watchTrack(track);
+      for (const entry of peersRef.current.values()) {
+        await findSender(entry.pc, "video")?.replaceTrack(track);
+      }
+      const next = new MediaStream([
+        ...stream.getTracks().filter((t) => t.kind !== "video"),
+        track,
+      ]);
+      localStreamRef.current = next;
+      setLocalStream(next);
+      setIsCameraOff(false);
+    } catch (err) {
+      reportError(err, "Could not start video source");
+    } finally {
+      startingCameraRef.current = false;
+    }
+    // watchTrack é estável (usa ref)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reportError]);
+
   const toggleCamera = useCallback(() => {
     const videoTrack = localStreamRef.current?.getVideoTracks()[0];
-    if (videoTrack) {
+    if (videoTrack && videoTrack.readyState === "live") {
       videoTrack.enabled = !videoTrack.enabled;
       setIsCameraOff(!videoTrack.enabled);
+      return;
     }
-  }, []);
+    void startCamera();
+  }, [startCamera]);
 
   // Estado geral da chamada, para o indicador visual
   const connectionState = useMemo<ConnectionState>(() => {
