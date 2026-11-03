@@ -83,3 +83,48 @@ O `CLIENT_URL` libera o WebSocket (CORS) e monta os links dos e-mails.
   login bloquear usuários diferentes juntos, é sinal de que o IP real não está sendo
   lido. Nesse caso, revise esse valor.
 - **Deploys automáticos:** cada push na `main` atualiza Render e Vercel.
+
+---
+
+## Homologação (ambiente de testes)
+
+| Branch | Ambiente | Frontend | Backend | Banco |
+|---|---|---|---|---|
+| `main` | Produção | URL de produção da Vercel | `psiconnect-api` | Neon, database de produção |
+| `homolog` | Homologação | `<projeto>-git-homolog-<conta>.vercel.app` | `palas-api-homolog` | Neon, database `homolog` |
+
+**Fluxo:** suba as mudanças na `homolog`, teste lá e, se estiver tudo certo,
+abra um PR `homolog → main` para levar a mudança à produção.
+
+Como funciona: na branch `homolog` a Vercel faz o build com
+`--mode homolog` (lê [frontend/.env.homolog](frontend/.env.homolog)), e o
+[frontend/vercel.json](frontend/vercel.json) repassa `/api` para o backend de
+homologação quando o host é a URL da branch. Os mesmos arquivos vão para a
+`main` sem afetar a produção.
+
+### Configuração (uma vez só)
+
+1. **Neon — banco separado.** No mesmo projeto, em **Databases → New database**,
+   crie `homolog`. Copie a connection string **direta** dele (sem `-pooler`,
+   com `?sslmode=require`). Não use uma *branch* do Neon copiada da produção:
+   ela levaria dados reais de psicólogos para o ambiente de testes (LGPD).
+2. **Render — backend de homologação.** **New → Web Service** → este repositório:
+   - **Name:** `palas-api-homolog` · **Branch:** `homolog` · **Region:** Virginia
+   - **Runtime:** Docker · **Dockerfile Path:** `./backend/Dockerfile` ·
+     **Docker Context:** `./backend` · **Health Check Path:** `/api/health`
+   - **Plan:** Free
+   - **Environment:** `NODE_ENV=production`, `DATABASE_URL` (do passo 1),
+     `JWT_SECRET` (um valor novo, diferente da produção), `JWT_EXPIRES_IN=8h`,
+     `TRUST_PROXY=2`, `MAX_ROOM_PARTICIPANTS=6` e `CLIENT_URL` (passo 4).
+
+   > Se a URL não sair `palas-api-homolog.onrender.com`, troque-a em
+   > [frontend/.env.homolog](frontend/.env.homolog) e no primeiro rewrite de
+   > [frontend/vercel.json](frontend/vercel.json).
+3. **Vercel — URL da branch.** Nada a criar: todo push na `homolog` gera um
+   deploy. Em **Deployments**, abra o da branch `homolog` e copie o domínio que
+   tem `-git-homolog-` (ele não muda entre deploys). Use sempre esse; as URLs
+   com hash de commit falam com o backend de produção.
+   - Em **Settings → Deployment Protection**, desative a *Vercel Authentication*
+     (ou deixe só para produção). Senão o paciente de teste precisa de login na Vercel.
+4. **Ligar as pontas.** No Render (`palas-api-homolog`), coloque em `CLIENT_URL`
+   o domínio do passo 3, sem barra no final.
