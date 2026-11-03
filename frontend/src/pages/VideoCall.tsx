@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from "react";
 import { Navigate, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { ControlButton } from "../components/ControlButton";
 import { VideoTile } from "../components/VideoTile";
+import { usePictureInPicture } from "../hooks/usePictureInPicture";
 import { useWakeLock } from "../hooks/useWakeLock";
 import { useWebRTC, type RemoteParticipant } from "../hooks/useWebRTC";
 import { healthService } from "../services/api";
@@ -174,6 +175,24 @@ const VideoCallInner: React.FC<VideoCallInnerProps> = ({
   });
 
   useWakeLock(true);
+
+  // Janela flutuante: mostra o psicólogo (para o paciente) ou o primeiro
+  // participante com vídeo (para o psicólogo)
+  const pipTarget =
+    participants.find((p) => p.role === "host" && p.stream) ??
+    participants.find((p) => p.stream);
+  const [pipVideo, setPipVideo] = useState<HTMLVideoElement | null>(null);
+  const {
+    isSupported: pipSupported,
+    isActive: pipActive,
+    toggle: togglePipWindow,
+  } = usePictureInPicture(pipTarget ? pipVideo : null);
+
+  const togglePip = useCallback(() => {
+    togglePipWindow().catch(() => {
+      setErrorMessage("Não foi possível abrir a janela flutuante.");
+    });
+  }, [togglePipWindow]);
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -356,6 +375,7 @@ const VideoCallInner: React.FC<VideoCallInnerProps> = ({
                 stream={p.stream}
                 label={participantLabel(p)}
                 isMuted={false}
+                videoRef={p.peerId === pipTarget?.peerId ? setPipVideo : undefined}
               />
             ))}
           </div>
@@ -375,7 +395,7 @@ const VideoCallInner: React.FC<VideoCallInnerProps> = ({
       </div>
 
       {/* Controles */}
-      <div className="bg-gray-900 px-6 py-4 flex justify-center items-center gap-4">
+      <div className="bg-gray-900 px-4 py-4 flex flex-wrap justify-center items-center gap-3">
         <ControlButton
           onClick={toggleMic}
           variant={isMicMuted ? "danger" : "secondary"}
@@ -389,6 +409,19 @@ const VideoCallInner: React.FC<VideoCallInnerProps> = ({
         >
           {isCameraOff ? "📷 Câmera" : "📹 Câmera"}
         </ControlButton>
+
+        {pipSupported && (
+          <ControlButton
+            onClick={togglePip}
+            variant={pipActive ? "primary" : "secondary"}
+            ariaPressed={pipActive}
+            ariaLabel={
+              pipActive ? "Fechar janela flutuante" : "Abrir janela flutuante"
+            }
+          >
+            🗗 Janela
+          </ControlButton>
+        )}
 
         <ControlButton onClick={handleEndClick} variant="danger">
           {role === "host" ? "Encerrar" : "Sair"}

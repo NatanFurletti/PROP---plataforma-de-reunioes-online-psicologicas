@@ -4,25 +4,36 @@ interface VideoTileProps {
   stream: MediaStream | null;
   label: string;
   isMuted?: boolean;
+  // Expõe o <video> (ex.: para a janela flutuante)
+  videoRef?: (element: HTMLVideoElement | null) => void;
 }
 
 export const VideoTile: React.FC<VideoTileProps> = ({
   stream,
   label,
   isMuted = false,
+  videoRef,
 }) => {
-  const videoRef = React.useRef<HTMLVideoElement>(null);
+  const localRef = React.useRef<HTMLVideoElement | null>(null);
+
+  const setRefs = React.useCallback(
+    (element: HTMLVideoElement | null) => {
+      localRef.current = element;
+      videoRef?.(element);
+    },
+    [videoRef],
+  );
 
   React.useEffect(() => {
-    if (videoRef.current && stream) {
-      videoRef.current.srcObject = stream;
+    if (localRef.current && stream) {
+      localRef.current.srcObject = stream;
     }
   }, [stream]);
 
   return (
     <div className="relative bg-gray-900 rounded-lg overflow-hidden h-full">
       <video
-        ref={videoRef}
+        ref={setRefs}
         autoPlay
         playsInline
         muted={isMuted}

@@ -176,6 +176,11 @@ Paciente (novo)            Servidor (Signaling)         Psicólogo (Host)
 - Limite da plataforma: navegadores mobile suspendem a **câmera** quando a
   página sai da tela (privacidade do iOS/Android). O vídeo congela para o
   outro lado e volta sozinho; só um app nativo contorna isso.
+- Janela flutuante (`usePictureInPicture`): botão "Janela" mostra o vídeo
+  do outro participante (o psicólogo, para o paciente) em picture-in-picture,
+  com o áudio, enquanto o usuário usa outros apps. Abre sozinha ao sair da
+  página onde o navegador permite (Media Session no Chrome,
+  `autopictureinpicture` no Safari). O botão só aparece se houver suporte.
 
 **TURN/STUN:** o `docker-compose` sobe um `coturn` local. Sem TURN, pares
 atrás de NAT simétrico não conseguem estabelecer a conexão P2P. Em

@@ -5,6 +5,9 @@ interface ControlButtonProps {
   disabled?: boolean;
   variant?: "primary" | "danger" | "secondary";
   icon?: React.ReactNode;
+  ariaLabel?: string;
+  // Botões de alternância (ex.: janela flutuante ligada/desligada)
+  ariaPressed?: boolean;
   children: React.ReactNode;
 }
 
@@ -13,6 +16,8 @@ export const ControlButton: React.FC<ControlButtonProps> = ({
   disabled = false,
   variant = "primary",
   icon,
+  ariaLabel,
+  ariaPressed,
   children,
 }) => {
   const variantClasses = {
@@ -25,6 +30,8 @@ export const ControlButton: React.FC<ControlButtonProps> = ({
     <button
       onClick={onClick}
       disabled={disabled}
+      aria-label={ariaLabel}
+      aria-pressed={ariaPressed}
       className={`
         p-3 rounded-full flex items-center justify-center gap-2
         text-white font-semibold transition-all
