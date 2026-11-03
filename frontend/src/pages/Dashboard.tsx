@@ -139,7 +139,7 @@ export const Dashboard: React.FC = () => {
       <nav className="bg-white shadow">
         <div className="mx-auto max-w-6xl px-4 py-4 flex items-center justify-between">
           <div>
-            <h1 className="text-xl font-semibold text-gray-900">PsiConnect</h1>
+            <h1 className="text-xl font-semibold text-gray-900">Palas</h1>
             <p className="text-sm text-gray-500">Bem-vindo, {psychologist?.name}</p>
           </div>
           <button

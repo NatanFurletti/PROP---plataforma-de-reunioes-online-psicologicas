@@ -6,7 +6,7 @@
 
 ## 📌 Visão Geral do Projeto
 
-**Nome do produto:** PsiConnect *(sugestão — ajuste conforme necessário)*
+**Nome do produto:** Palas *(nome provisório — domínio e marca ainda não verificados)*
 
 **Objetivo:** Plataforma web de videochamadas com áudio dedicada a psicólogos para condução de sessões terapêuticas online, com foco em privacidade, segurança e experiência clínica.
 
@@ -19,7 +19,7 @@
 ## 🏗️ Arquitetura Geral
 
 ```
-psiconnect/
+palas/
 ├── frontend/           # Interface do usuário (React + TypeScript)
 │   ├── src/
 │   │   ├── components/     # Componentes reutilizáveis

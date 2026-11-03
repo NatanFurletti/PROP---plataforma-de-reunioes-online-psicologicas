@@ -1,4 +1,4 @@
-# 🚀 Guia de Setup - PsiConnect
+# 🚀 Guia de Setup - Palas
 
 ## Pré-requisitos
 
@@ -63,7 +63,7 @@ npm run dev
 ## 📁 Estrutura do Projeto
 
 ```
-psiconnect/
+palas/
 ├── backend/              # API REST + WebRTC Signaling
 │   ├── src/
 │   │   ├── index.ts      # Servidor principal

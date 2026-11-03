@@ -29,7 +29,7 @@ export const Login: React.FC = () => {
   return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-r from-blue-600 to-blue-800">
       <div className="bg-white rounded-lg shadow-lg p-8 w-full max-w-md">
-        <h1 className="text-2xl font-bold text-center mb-6">PsiConnect</h1>
+        <h1 className="text-2xl font-bold text-center mb-6">Palas</h1>
 
         <form onSubmit={handleSubmit} className="space-y-4">
           <input

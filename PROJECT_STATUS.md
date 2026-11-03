@@ -1,4 +1,4 @@
-# 📋 Projeto PsiConnect - Checklist de Criação
+# 📋 Projeto Palas - Checklist de Criação
 
 ## ✅ Estrutura Criada
 
