@@ -91,7 +91,7 @@ O `CLIENT_URL` libera o WebSocket (CORS) e monta os links dos e-mails.
 | Branch | Ambiente | Frontend | Backend | Banco |
 |---|---|---|---|---|
 | `main` | Produção | URL de produção da Vercel | `psiconnect-api` | Neon, database de produção |
-| `homolog` | Homologação | `<projeto>-git-homolog-<conta>.vercel.app` | `palas-api-homolog` | Neon, projeto `palas-homolog` |
+| `homolog` | Homologação | `prop-plataforma-de-reunioes-git-84ac90-natanfurlettis-projects.vercel.app` | `palas-api-homolog` | Neon, projeto `palas-homolog` |
 
 **Fluxo:** suba as mudanças na `homolog`, teste lá e, se estiver tudo certo,
 abra um PR `homolog → main` para levar a mudança à produção.
@@ -123,8 +123,11 @@ homologação quando o host é a URL da branch. Os mesmos arquivos vão para a
    > [frontend/.env.homolog](frontend/.env.homolog) e no primeiro rewrite de
    > [frontend/vercel.json](frontend/vercel.json).
 3. **Vercel — URL da branch.** Nada a criar: todo push na `homolog` gera um
-   deploy. Em **Deployments**, abra o da branch `homolog` e copie o domínio que
-   tem `-git-homolog-` (ele não muda entre deploys). Use sempre esse; as URLs
+   deploy no domínio fixo da branch (em **Active Branches → homolog → Domains**).
+   Como o nome do projeto é longo, a Vercel encurta esse domínio e troca o nome
+   da branch por um código (`-git-84ac90-`), que não muda entre deploys. Esse
+   domínio está no primeiro rewrite de [frontend/vercel.json](frontend/vercel.json);
+   se o projeto for renomeado, atualize-o lá. Use sempre esse domínio: as URLs
    com hash de commit falam com o backend de produção.
    - Em **Settings → Deployment Protection**, desative a *Vercel Authentication*
      (ou deixe só para produção). Senão o paciente de teste precisa de login na Vercel.

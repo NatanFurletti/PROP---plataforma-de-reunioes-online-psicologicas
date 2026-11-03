@@ -6,7 +6,7 @@
   "rewrites": [
     {
       "source": "/api/:path*",
-      "has": [{ "type": "host", "value": ".*-git-homolog-.*\\.vercel\\.app" }],
+      "has": [{ "type": "host", "value": "prop-plataforma-de-reunioes-git-84ac90-natanfurlettis-projects\\.vercel\\.app" }],
       "destination": "https://palas-api-homolog.onrender.com/api/:path*"
     },
     {
