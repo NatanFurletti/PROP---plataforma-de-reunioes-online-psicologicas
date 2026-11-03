@@ -91,7 +91,7 @@ O `CLIENT_URL` libera o WebSocket (CORS) e monta os links dos e-mails.
 | Branch | Ambiente | Frontend | Backend | Banco |
 |---|---|---|---|---|
 | `main` | Produção | URL de produção da Vercel | `psiconnect-api` | Neon, database de produção |
-| `homolog` | Homologação | `<projeto>-git-homolog-<conta>.vercel.app` | `palas-api-homolog` | Neon, database `homolog` |
+| `homolog` | Homologação | `<projeto>-git-homolog-<conta>.vercel.app` | `palas-api-homolog` | Neon, projeto `palas-homolog` |
 
 **Fluxo:** suba as mudanças na `homolog`, teste lá e, se estiver tudo certo,
 abra um PR `homolog → main` para levar a mudança à produção.
@@ -104,10 +104,12 @@ homologação quando o host é a URL da branch. Os mesmos arquivos vão para a
 
 ### Configuração (uma vez só)
 
-1. **Neon — banco separado.** No mesmo projeto, em **Databases → New database**,
-   crie `homolog`. Copie a connection string **direta** dele (sem `-pooler`,
-   com `?sslmode=require`). Não use uma *branch* do Neon copiada da produção:
-   ela levaria dados reais de psicólogos para o ambiente de testes (LGPD).
+1. **Neon — banco separado.** Crie um **projeto novo** (`palas-homolog`,
+   região AWS US East / N. Virginia) e copie a connection string **direta**
+   dele (sem `-pooler`, com `?sslmode=require`). Projeto separado, e não uma
+   database ou *branch* no projeto de produção: no Neon, usuários criados pelo
+   painel leem todas as databases do projeto, e uma branch copia os dados
+   reais de psicólogos (LGPD).
 2. **Render — backend de homologação.** **New → Web Service** → este repositório:
    - **Name:** `palas-api-homolog` · **Branch:** `homolog` · **Region:** Virginia
    - **Runtime:** Docker · **Dockerfile Path:** `./backend/Dockerfile` ·
