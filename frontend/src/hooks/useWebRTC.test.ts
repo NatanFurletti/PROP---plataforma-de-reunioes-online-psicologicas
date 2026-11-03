@@ -624,6 +624,39 @@ describe("useWebRTC — câmera indisponível", () => {
     );
   });
 
+  it("tenta a câmera de novo quando ela ainda estava sendo liberada", async () => {
+    const full = createFakeStream([createFakeTrack("audio"), createFakeTrack("video")]);
+    const getUserMedia = stubGetUserMedia(async () => full);
+    getUserMedia.mockImplementationOnce(async () => {
+      throw Object.assign(new Error("Could not start video source"), {
+        name: "NotReadableError",
+      });
+    });
+    const onError = vi.fn();
+
+    const { result } = renderHook(() => useWebRTC({ ...GUEST_OPTS, onError }));
+    await waitFor(() => expect(result.current.localStream).toBe(full), { timeout: 3000 });
+
+    expect(getUserMedia).toHaveBeenCalledTimes(2);
+    expect(result.current.isCameraOff).toBe(false);
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it("informa o motivo real quando a câmera foi bloqueada", async () => {
+    const getUserMedia = stubGetUserMedia(async () => audioOnlyStream());
+    getUserMedia.mockImplementationOnce(async () => {
+      throw Object.assign(new Error("Permission denied"), { name: "NotAllowedError" });
+    });
+    const onError = vi.fn();
+
+    const { result } = renderHook(() => useWebRTC({ ...GUEST_OPTS, onError }));
+    await waitFor(() => expect(result.current.localStream).not.toBeNull());
+
+    expect(onError).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "NotAllowedError", message: expect.stringMatching(/audio only/) }),
+    );
+  });
+
   it("falha só quando nem o áudio funciona", async () => {
     stubGetUserMedia(async () => {
       throw new Error("Permission denied");

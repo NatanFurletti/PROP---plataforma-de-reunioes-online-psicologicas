@@ -52,6 +52,13 @@ function friendlyError(error: Error): string {
     return "Você entrou nesta sessão em outra aba ou dispositivo. Esta janela foi desconectada.";
   }
   if (/audio only/i.test(message)) {
+    // `name` traz o motivo real da falha da câmera
+    if (/NotAllowedError|SecurityError/.test(error.name)) {
+      return "O navegador bloqueou a câmera. Você entrou só com áudio: libere a câmera no ícone de cadeado da barra de endereço e toque em Câmera.";
+    }
+    if (/NotFoundError|OverconstrainedError/.test(error.name)) {
+      return "Nenhuma câmera foi encontrada. Você entrou só com áudio.";
+    }
     return "Não foi possível usar a câmera (ela pode estar em uso por outro programa ou navegador). Você entrou só com áudio: feche o outro programa e toque em Câmera para ligá-la.";
   }
   if (/NotReadableError|Could not start video source|Failed to allocate videosource/i.test(detail)) {

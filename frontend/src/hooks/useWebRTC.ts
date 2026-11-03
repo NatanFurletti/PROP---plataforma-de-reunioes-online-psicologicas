@@ -111,6 +111,13 @@ function buildIceServers(): RTCIceServer[] {
   return iceServers;
 }
 
+const CAMERA_RETRY_DELAY_MS = 1000;
+
+// Erros de captura que costumam passar sozinhos (dispositivo ainda ocupado)
+function isTransientMediaError(err: unknown): boolean {
+  return err instanceof Error && /NotReadableError|AbortError/.test(err.name);
+}
+
 function toError(err: unknown, fallback: string): Error {
   return err instanceof Error ? err : new Error(fallback);
 }
@@ -465,26 +472,40 @@ export const useWebRTC = ({
 
     const setup = async () => {
       // 1. Câmera e microfone
-      let stream: MediaStream;
-      let audioOnly = false;
+      let stream: MediaStream | null = null;
+      let videoError: unknown = null;
+      const captureAll = () =>
+        navigator.mediaDevices.getUserMedia({ audio: true, video: VIDEO_CONSTRAINTS });
       try {
-        stream = await navigator.mediaDevices.getUserMedia({
-          audio: true,
-          video: VIDEO_CONSTRAINTS,
-        });
+        stream = await captureAll();
       } catch (err) {
-        // Câmera ocupada por outro app/navegador (comum no Windows) ou
-        // ausente: entra só com áudio em vez de não entrar
+        videoError = err;
+        // No Windows a câmera pode levar um instante para ser liberada (aba
+        // anterior, StrictMode em dev, driver lento): tenta mais uma vez
+        if (isTransientMediaError(err)) {
+          await new Promise((resolve) => setTimeout(resolve, CAMERA_RETRY_DELAY_MS));
+          if (cancelled) return;
+          try {
+            stream = await captureAll();
+            videoError = null;
+          } catch (retryErr) {
+            videoError = retryErr;
+          }
+        }
+      }
+      if (!stream) {
+        // Câmera ocupada, bloqueada ou ausente: entra só com áudio em vez
+        // de não entrar
         try {
           stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-          audioOnly = true;
         } catch {
           if (cancelled) return;
           setMediaState("failed");
-          reportError(err, "Failed to access media devices");
+          reportError(videoError, "Failed to access media devices");
           return;
         }
       }
+      const audioOnly = videoError !== null;
 
       if (cancelled) {
         stream.getTracks().forEach((t) => t.stop());
@@ -497,7 +518,13 @@ export const useWebRTC = ({
       setMediaState("ready");
       if (audioOnly) {
         setIsCameraOff(true);
-        reportError(null, "Camera unavailable: joined with audio only");
+        // Mantém o tipo do erro original (ex.: NotAllowedError) para a
+        // mensagem dizer o motivo certo
+        const cause = videoError instanceof Error ? videoError.name : "Error";
+        console.warn("Camera unavailable:", cause);
+        const error = new Error("Camera unavailable: joined with audio only");
+        error.name = cause;
+        reportError(error, "Camera unavailable: joined with audio only");
       }
 
       // 2. Sinalização autenticada
