@@ -55,6 +55,26 @@ function setPipActionHandler(handler: (() => void) | null): boolean {
   }
 }
 
+// O navegador só abre a janela sozinho se considerar que a página está
+// "tocando mídia": metadados + playbackState "playing" marcam isso.
+function markMediaSessionActive(active: boolean): void {
+  if (!("mediaSession" in navigator)) return;
+  try {
+    const session = navigator.mediaSession;
+    if (active) {
+      if (typeof MediaMetadata !== "undefined") {
+        session.metadata = new MediaMetadata({ title: "Sessão em andamento" });
+      }
+      session.playbackState = "playing";
+    } else {
+      session.metadata = null;
+      session.playbackState = "none";
+    }
+  } catch {
+    // Media Session parcial: segue sem
+  }
+}
+
 interface UsePictureInPictureReturn {
   isSupported: boolean;
   isActive: boolean;
@@ -113,6 +133,8 @@ export const usePictureInPicture = (
     v.addEventListener("webkitpresentationmodechanged", sync);
     // Safari: abre a janela sozinho ao sair da página com o vídeo tocando
     v.setAttribute("autopictureinpicture", "");
+    // PiP automático exige o vídeo tocando (autoplay pode ter sido barrado)
+    if (v.paused) v.play()?.catch(() => {});
 
     return () => {
       v.removeEventListener("enterpictureinpicture", sync);
@@ -130,8 +152,10 @@ export const usePictureInPicture = (
       enter().catch(() => {});
     });
     if (!registered) return;
+    markMediaSessionActive(true);
     return () => {
       setPipActionHandler(null);
+      markMediaSessionActive(false);
     };
   }, [isSupported, enter]);
 

@@ -32,11 +32,19 @@ function stubStandardPip(video: HTMLVideoElement) {
 
 function stubMediaSession() {
   const setActionHandler = vi.fn();
-  vi.stubGlobal("navigator", {
-    ...globalThis.navigator,
-    mediaSession: { setActionHandler },
-  });
-  return setActionHandler;
+  const mediaSession = {
+    setActionHandler,
+    metadata: null as unknown,
+    playbackState: "none",
+  };
+  vi.stubGlobal("navigator", { ...globalThis.navigator, mediaSession });
+  vi.stubGlobal(
+    "MediaMetadata",
+    class {
+      constructor(public init: MediaMetadataInit) {}
+    },
+  );
+  return { setActionHandler, mediaSession };
 }
 
 beforeEach(() => {
@@ -104,10 +112,15 @@ describe("usePictureInPicture", () => {
   });
 
   it("registra o PiP automático na Media Session e remove ao desmontar", async () => {
-    const setActionHandler = stubMediaSession();
+    const { setActionHandler, mediaSession } = stubMediaSession();
     const video = document.createElement("video");
     const { request } = stubStandardPip(video);
     const { unmount } = renderHook(() => usePictureInPicture(video));
+
+    // Marca a página como "tocando mídia" para o navegador abrir sozinho
+    expect(mediaSession.playbackState).toBe("playing");
+    expect(mediaSession.metadata).not.toBeNull();
+    expect(video.hasAttribute("autopictureinpicture")).toBe(true);
 
     expect(setActionHandler).toHaveBeenCalledWith(
       "enterpictureinpicture",
@@ -119,6 +132,7 @@ describe("usePictureInPicture", () => {
 
     unmount();
     expect(setActionHandler).toHaveBeenLastCalledWith("enterpictureinpicture", null);
+    expect(mediaSession.playbackState).toBe("none");
   });
 
   it("fecha a janela quando o vídeo sai da chamada", async () => {

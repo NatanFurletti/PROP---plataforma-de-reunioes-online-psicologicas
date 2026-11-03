@@ -183,7 +183,9 @@ Paciente (novo)            Servidor (Signaling)         Psicólogo (Host)
   do outro participante (o psicólogo, para o paciente) em picture-in-picture,
   com o áudio, enquanto o usuário usa outros apps. Abre sozinha ao sair da
   página onde o navegador permite (Media Session no Chrome,
-  `autopictureinpicture` no Safari). O botão só aparece se houver suporte.
+  `autopictureinpicture` no Safari). Para isso o hook marca a Media Session
+  como ativa (metadados + `playbackState: "playing"`) e garante o vídeo
+  tocando; o navegador ainda decide se abre. O botão só aparece se houver suporte.
 
 **TURN/STUN:** o `docker-compose` sobe um `coturn` local. Sem TURN, pares
 atrás de NAT simétrico não conseguem estabelecer a conexão P2P. Em
