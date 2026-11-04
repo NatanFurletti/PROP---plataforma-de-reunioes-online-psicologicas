@@ -47,7 +47,7 @@ export class EmailService {
     const link = `${env.CLIENT_URL}/verify-email/${token}`;
     await driver.send({
       to,
-      subject: "Confirme seu e-mail — PsiConnect",
+      subject: "Confirme seu e-mail — Palas",
       text: `Para confirmar seu e-mail, acesse: ${link}\n\nO link expira em 24 horas.`,
     });
   }
@@ -59,7 +59,7 @@ export class EmailService {
     const link = `${env.CLIENT_URL}/reset-password/${token}`;
     await driver.send({
       to,
-      subject: "Redefinição de senha — PsiConnect",
+      subject: "Redefinição de senha — Palas",
       text: `Para redefinir sua senha, acesse: ${link}\n\nO link expira em 1 hora. Se você não solicitou, ignore esta mensagem.`,
     });
   }

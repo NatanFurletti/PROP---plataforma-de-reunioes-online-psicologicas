@@ -1,4 +1,4 @@
-# 🧬 PsiConnect - Plataforma de Videochamadas para Psicólogos
+# 🧬 Palas - Plataforma de Videochamadas para Psicólogos
 
 ![Status](https://img.shields.io/badge/status-em%20desenvolvimento-yellow)
 ![License](https://img.shields.io/badge/license-MIT-green)
@@ -129,7 +129,7 @@ PATCH  /api/sessions/:id/status
 ## 🗂️ Estrutura do Projeto
 
 ```
-psiconnect/
+palas/
 ├── backend/
 │   ├── src/
 │   │   ├── index.ts              # Servidor principal

@@ -87,7 +87,7 @@ export const Register: React.FC = () => {
   return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-r from-blue-600 to-blue-800">
       <div className="bg-white rounded-lg shadow-lg p-8 w-full max-w-md">
-        <h1 className="text-2xl font-bold text-center mb-2">PsiConnect</h1>
+        <h1 className="text-2xl font-bold text-center mb-2">Palas</h1>
         <p className="text-center text-gray-500 text-sm mb-6">Crie sua conta</p>
 
         <form onSubmit={handleSubmit} className="space-y-4">

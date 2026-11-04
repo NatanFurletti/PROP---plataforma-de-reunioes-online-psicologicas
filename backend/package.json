@@ -1,7 +1,7 @@
 {
-  "name": "psiconnect-backend",
+  "name": "palas-backend",
   "version": "1.0.0",
-  "description": "Backend da plataforma PsiConnect - Videochamadas para psicólogos",
+  "description": "Backend da plataforma Palas - Videochamadas para psicólogos",
   "main": "dist/index.js",
   "type": "module",
   "scripts": {

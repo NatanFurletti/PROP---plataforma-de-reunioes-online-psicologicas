@@ -6,7 +6,7 @@
 
 ## 📌 Visão Geral do Projeto
 
-**Nome do produto:** PsiConnect *(sugestão — ajuste conforme necessário)*
+**Nome do produto:** Palas *(nome provisório — domínio e marca ainda não verificados)*
 
 **Objetivo:** Plataforma web de videochamadas com áudio dedicada a psicólogos para condução de sessões terapêuticas online, com foco em privacidade, segurança e experiência clínica.
 
@@ -19,7 +19,7 @@
 ## 🏗️ Arquitetura Geral
 
 ```
-psiconnect/
+palas/
 ├── frontend/           # Interface do usuário (React + TypeScript)
 │   ├── src/
 │   │   ├── components/     # Componentes reutilizáveis
@@ -425,6 +425,7 @@ Frontend na **Vercel**, backend no **Render**, banco no **Neon** — passo a pas
 - A Vercel repassa `/api/*` ao backend (`frontend/vercel.json`): API no mesmo domínio do site, cookie first-party.
 - O WebSocket vai direto ao Render (`VITE_SOCKET_URL` em `frontend/.env.production`).
 - O backend roda como **uma única instância** (salas em memória).
+- **Homologação:** a branch `homolog` tem frontend (URL de branch da Vercel), backend (`palas-api-homolog`) e banco próprios. Teste lá e leve à produção com PR `homolog → main`.
 
 ## 📎 Referências e Documentação
 
