@@ -87,6 +87,7 @@ palas/
 - **Sala de espera com aprovação:** o paciente informa o nome e aguarda; o psicólogo vê o pedido e admite ou recusa cada entrada
 - **Vários participantes:** até `MAX_ROOM_PARTICIPANTS` pessoas por sala (padrão 6, psicólogo incluso)
 - **Reconexão automática** em caso de queda de conexão
+- **Chat da chamada:** botão "Chat" abre um painel (lateral no desktop, tela cheia no celular) com texto livre e envio de imagens e documentos de texto
 
 ### Módulo de Agendamento
 - Psicólogo cria sessões com data, hora e duração
@@ -193,6 +194,22 @@ Paciente (novo)            Servidor (Signaling)         Psicólogo (Host)
   `autopictureinpicture` no Safari). Para isso o hook marca a Media Session
   como ativa (metadados + `playbackState: "playing"`) e garante o vídeo
   tocando; o navegador ainda decide se abre. O botão só aparece se houver suporte.
+
+**Chat da chamada (`chat-message`):**
+- Passa pelo mesmo socket da sinalização. Só participantes **admitidos**
+  enviam e recebem — paciente em espera não vê o chat.
+- **Nada é gravado:** o servidor valida e repassa aos demais da sala (sem
+  log do conteúdo). As mensagens vivem só na memória de cada aba; quem
+  entra depois não vê o histórico, e recarregar a página o apaga.
+- Texto até 2000 caracteres. Arquivos até 5 MB, enviados como binário:
+  imagens (PNG, JPG, GIF, WEBP) e documentos (PDF, TXT, RTF, DOC, DOCX,
+  ODT). O servidor define o tipo pela extensão e confere a assinatura do
+  conteúdo (SVG/HTML nunca são aceitos). Lista em `socket/chat.ts`,
+  espelhada em `frontend/src/utils/chatFiles.ts`.
+- Por isso `maxHttpBufferSize` do Socket.IO é ~5 MB (padrão é 1 MB).
+- Limite por socket: 10 mensagens e 15 MB de arquivos a cada 10 s.
+- O remetente recebe ack `{ ok, id, sentAt }` ou `{ ok: false, error }`
+  e não recebe o próprio eco.
 
 **TURN/STUN:** o `docker-compose` sobe um `coturn` local. Sem TURN, pares
 atrás de NAT simétrico não conseguem estabelecer a conexão P2P. Em
@@ -367,6 +384,8 @@ virar um oráculo de e-mails cadastrados. Redefinir a senha incrementa
 | `room-full` | Servidor → Cliente | `{ error }` | Sala cheia ou host duplicado |
 | `session-ended` | Servidor → Cliente | `{}` | Sessão encerrada pelo host |
 | `restart-ice` | Cliente ↔ Servidor | `{ to }` / `{ from }` | Pede ao autor da offer um ICE restart |
+| `chat-message` | Cliente → Servidor | `{ text?, file?: { name, data } }` + ack | Mensagem do chat (texto e/ou arquivo binário) |
+| `chat-message` | Servidor → Cliente | `{ id, from, senderName, senderRole, sentAt, text?, file?: { name, type, size, data } }` | Mensagem de outro participante |
 
 ---
 
