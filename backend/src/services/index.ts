@@ -25,6 +25,10 @@ export const loginSchema = z.object({
   password: z.string(),
 });
 
+// Quanto o horário de uma sessão "para agora" pode chegar atrasado
+// (latência, relógio do aparelho um pouco adiantado/atrasado).
+export const START_NOW_TOLERANCE_MS = 5 * 60_000;
+
 export const createSessionSchema = z.object({
   scheduledAt: z.string().datetime(),
   durationMinutes: z.number().int().min(15).max(480),
@@ -341,7 +345,12 @@ export class SessionService {
     data: z.infer<typeof createSessionSchema>,
     psychologistId: string,
   ) {
-    if (new Date(data.scheduledAt) < new Date()) {
+    // Sessão "para agora": o horário enviado pelo frontend chega alguns
+    // segundos atrasado (rede, relógio do aparelho). Dentro da tolerância,
+    // grava como agora; antes disso é um horário no passado.
+    const now = Date.now();
+    const requested = new Date(data.scheduledAt).getTime();
+    if (requested < now - START_NOW_TOLERANCE_MS) {
       throw new AppError("scheduledAt must be in the future", 400);
     }
 
@@ -350,7 +359,7 @@ export class SessionService {
     const session = await prisma.session.create({
       data: {
         psychologistId,
-        scheduledAt: new Date(data.scheduledAt),
+        scheduledAt: new Date(Math.max(requested, now)),
         durationMinutes: data.durationMinutes,
         accessToken,
       },

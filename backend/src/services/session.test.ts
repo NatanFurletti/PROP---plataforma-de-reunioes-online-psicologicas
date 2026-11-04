@@ -28,7 +28,7 @@ describe("SessionService.createSession", () => {
   });
 
   it("rejeita scheduledAt no passado", async () => {
-    const past = new Date(Date.now() - 60_000).toISOString();
+    const past = new Date(Date.now() - 10 * 60_000).toISOString();
     await expect(
       SessionService.createSession(
         { scheduledAt: past, durationMinutes: 50 },
@@ -38,6 +38,18 @@ describe("SessionService.createSession", () => {
       message: "scheduledAt must be in the future",
       status: 400,
     });
+  });
+
+  it("aceita sessão para agora com alguns segundos de atraso e grava como agora", async () => {
+    prismaMock.session.create.mockResolvedValue({ id: "s1" });
+    const before = Date.now();
+    const slightlyPast = new Date(before - 30_000).toISOString();
+    await SessionService.createSession(
+      { scheduledAt: slightlyPast, durationMinutes: 50 },
+      "user-1",
+    );
+    const arg = prismaMock.session.create.mock.calls[0][0];
+    expect(arg.data.scheduledAt.getTime()).toBeGreaterThanOrEqual(before);
   });
 
   it("cria sessão com accessToken UUID", async () => {
