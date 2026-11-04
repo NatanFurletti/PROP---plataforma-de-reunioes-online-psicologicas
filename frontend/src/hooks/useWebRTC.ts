@@ -58,6 +58,9 @@ interface UseWebRTCReturn {
   isMicMuted: boolean;
   isCameraOff: boolean;
   connectionState: ConnectionState;
+  // Socket da chamada, para recursos que usam a mesma conexão (ex.: chat).
+  // null antes de conectar e depois de encerrar.
+  socket: Socket | null;
   toggleMic: () => void;
   toggleCamera: () => void;
   admitGuest: (guestId: string) => void;
@@ -162,6 +165,7 @@ export const useWebRTC = ({
   );
 
   const socketRef = useRef<Socket | null>(null);
+  const [socket, setSocket] = useState<Socket | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
   const peersRef = useRef(new Map<string, PeerEntry>());
   const admissionKeyRef = useRef(admissionKey);
@@ -380,6 +384,7 @@ export const useWebRTC = ({
       socketRef.current?.emit("session-end");
     }
     socketRef.current = null;
+    setSocket(null);
     closeSocket();
 
     setLocalStream(null);
@@ -560,6 +565,7 @@ export const useWebRTC = ({
             : undefined,
       });
       socketRef.current = socket;
+      setSocket(socket);
       let hasConnected = false;
 
       const joinRoom = () => {
@@ -903,6 +909,7 @@ export const useWebRTC = ({
     isMicMuted,
     isCameraOff,
     connectionState,
+    socket,
     toggleMic,
     toggleCamera,
     admitGuest,

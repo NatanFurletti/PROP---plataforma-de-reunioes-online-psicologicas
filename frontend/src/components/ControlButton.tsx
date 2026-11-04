@@ -33,7 +33,7 @@ export const ControlButton: React.FC<ControlButtonProps> = ({
       aria-label={ariaLabel}
       aria-pressed={ariaPressed}
       className={`
-        p-3 rounded-full flex items-center justify-center gap-2
+        relative p-3 rounded-full flex items-center justify-center gap-2
         text-white font-semibold transition-all
         disabled:opacity-50 disabled:cursor-not-allowed
         ${variantClasses[variant]}
