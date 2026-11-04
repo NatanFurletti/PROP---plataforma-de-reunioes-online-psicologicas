@@ -25,6 +25,7 @@ const prismaMock = {
 
 vi.mock("../prismaClient", () => ({ prisma: prismaMock }));
 
+const { MAX_SOCKET_PAYLOAD_BYTES } = await import("./chat");
 const { registerSignalingHandlers, __resetRooms, CONNECTION_STATE_RECOVERY } = await import(
   "./signalingHandler"
 );
@@ -72,6 +73,7 @@ beforeEach(async () => {
   httpServer = createServer();
   io = new Server(httpServer, {
     connectionStateRecovery: CONNECTION_STATE_RECOVERY,
+    maxHttpBufferSize: MAX_SOCKET_PAYLOAD_BYTES,
   });
   registerSignalingHandlers(io, prismaMock as never);
 
@@ -866,5 +868,108 @@ describe("signaling — mesma pessoa com dois sockets", () => {
     expect(await left).toEqual({ peerId: oldId });
     expect(await replaced).not.toBeNull();
     await vi.waitFor(() => expect(joinedIds).toContain(fresh.id));
+  });
+});
+
+describe("signaling — chat da chamada", () => {
+  interface ChatAck {
+    ok: boolean;
+    id?: string;
+    error?: string;
+  }
+
+  function sendChat(client: ClientSocket, payload: unknown): Promise<ChatAck> {
+    return client.timeout(1000).emitWithAck("chat-message", payload);
+  }
+
+  it("repassa texto aos outros participantes, não ao remetente", async () => {
+    const host = await connectHost();
+    const { guest } = await joinAndAdmit(host);
+    const { guest: guest2 } = await joinAndAdmit(host, "João");
+
+    const atHost = waitFor<Record<string, unknown>>(host, "chat-message");
+    const atGuest2 = waitFor<Record<string, unknown>>(guest2, "chat-message");
+    const echo = waitFor(guest, "chat-message");
+    const ack = await sendChat(guest, { text: "  bom dia  " });
+
+    expect(ack.ok).toBe(true);
+    const received = await atHost;
+    expect(received).toMatchObject({
+      id: ack.id,
+      from: guest.id,
+      senderName: "Maria",
+      senderRole: "guest",
+      text: "bom dia",
+    });
+    expect(await atGuest2).toMatchObject({ id: ack.id });
+    expect(await echo).toBeNull();
+  });
+
+  it("repassa arquivos como binário com o tipo definido pelo servidor", async () => {
+    const host = await connectHost();
+    const { guest } = await joinAndAdmit(host);
+
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 7]);
+    const atGuest = waitFor<{ file: { name: string; type: string; size: number; data: Buffer } }>(
+      guest,
+      "chat-message",
+    );
+    const ack = await sendChat(host, { file: { name: "desenho.png", data: png } });
+
+    expect(ack.ok).toBe(true);
+    const { file } = (await atGuest)!;
+    expect(file).toMatchObject({ name: "desenho.png", type: "image/png", size: png.length });
+    expect(Buffer.from(file.data).equals(png)).toBe(true);
+  });
+
+  it("aceita arquivo perto do limite de 5 MB", async () => {
+    const host = await connectHost();
+    const { guest } = await joinAndAdmit(host);
+
+    const big = Buffer.alloc(5 * 1024 * 1024);
+    Buffer.from("%PDF").copy(big);
+    const atGuest = waitFor<{ file: { size: number } }>(guest, "chat-message", 3000);
+    const ack = await sendChat(host, { file: { name: "a.pdf", data: big } });
+
+    expect(ack.ok).toBe(true);
+    expect((await atGuest)?.file.size).toBe(big.length);
+  });
+
+  it("recusa tipo de arquivo não permitido sem repassar", async () => {
+    const host = await connectHost();
+    const { guest } = await joinAndAdmit(host);
+
+    const atGuest = waitFor(guest, "chat-message");
+    const ack = await sendChat(host, {
+      file: { name: "pagina.html", data: Buffer.from("<script></script>") },
+    });
+
+    expect(ack).toEqual({ ok: false, error: "unsupported-type" });
+    expect(await atGuest).toBeNull();
+  });
+
+  it("paciente na sala de espera não envia nem recebe mensagens", async () => {
+    const host = await connectHost();
+    const request = waitFor(host, "guest-waiting");
+    const waiting = await connectAndJoin({ role: "guest", accessToken: ACCESS_TOKEN });
+    await request;
+
+    const ack = await sendChat(waiting, { text: "oi" });
+    expect(ack).toEqual({ ok: false, error: "not-in-call" });
+
+    const atWaiting = waitFor(waiting, "chat-message");
+    await sendChat(host, { text: "mensagem da chamada" });
+    expect(await atWaiting).toBeNull();
+  });
+
+  it("limita mensagens em sequência", async () => {
+    const host = await connectHost();
+    await joinAndAdmit(host);
+
+    const acks: ChatAck[] = [];
+    for (let i = 0; i < 11; i++) acks.push(await sendChat(host, { text: `m${i}` }));
+
+    expect(acks.slice(0, 10).every((a) => a.ok)).toBe(true);
+    expect(acks[10]).toEqual({ ok: false, error: "rate-limited" });
   });
 });

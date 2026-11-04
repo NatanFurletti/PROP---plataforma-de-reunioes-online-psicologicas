@@ -5,6 +5,7 @@ import cookie from "cookie";
 import { AuthService, SessionService } from "../services/index.js";
 import { logger } from "../config/logger.js";
 import { env } from "../config/env.js";
+import { createChatRateLimiter, parseChatMessage } from "./chat.js";
 
 // Subconjunto dos tipos WebRTC necessários para sinalização (não disponíveis no Node.js)
 interface RTCSessionDescriptionInit {
@@ -604,6 +605,43 @@ export function registerSignalingHandlers(
     // restart (ex.: voltou do segundo plano com a conexão P2P caída)
     socket.on("restart-ice", (payload: { to?: unknown }) => {
       relay("restart-ice", {}, payload?.to);
+    });
+
+    // ----------------------------------------------------------------
+    // chat-message: texto e/ou arquivo para todos da chamada. Só quem foi
+    // admitido envia e recebe. Nada é gravado — o servidor apenas repassa
+    // (e não registra o conteúdo em log).
+    // ----------------------------------------------------------------
+    const allowChatMessage = createChatRateLimiter();
+
+    socket.on("chat-message", (payload: unknown, ack?: unknown) => {
+      const reply = (response: object) => {
+        if (typeof ack === "function") ack(response);
+      };
+      const auth = getAuth(socket);
+      if (!auth) return reply({ ok: false, error: "not-in-call" });
+      const room = rooms.get(auth.sessionId);
+      if (!room || !room.participants.has(socket.id)) {
+        return reply({ ok: false, error: "not-in-call" });
+      }
+
+      const parsed = parseChatMessage(payload);
+      if (typeof parsed === "string") return reply({ ok: false, error: parsed });
+      if (!allowChatMessage(parsed.file?.size ?? 0)) {
+        return reply({ ok: false, error: "rate-limited" });
+      }
+
+      const message = {
+        id: randomUUID(),
+        from: socket.id,
+        senderName: auth.name,
+        senderRole: auth.role,
+        sentAt: new Date().toISOString(),
+        ...(parsed.text ? { text: parsed.text } : {}),
+        ...(parsed.file ? { file: parsed.file } : {}),
+      };
+      socket.to(auth.sessionId).emit("chat-message", message);
+      reply({ ok: true, id: message.id, sentAt: message.sentAt });
     });
 
     // ----------------------------------------------------------------

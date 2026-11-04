@@ -11,6 +11,7 @@ import {
   CONNECTION_STATE_RECOVERY,
   registerSignalingHandlers,
 } from "./socket/signalingHandler.js";
+import { MAX_SOCKET_PAYLOAD_BYTES } from "./socket/chat.js";
 import { prisma } from "./prismaClient.js";
 import { env } from "./config/env.js";
 import { logger } from "./config/logger.js";
@@ -26,6 +27,8 @@ export const io = new SocketIOServer(httpServer, {
   // No celular, trocar de app derruba o WebSocket. A recuperação devolve o
   // mesmo socket.id e entrega as mensagens perdidas durante a queda.
   connectionStateRecovery: CONNECTION_STATE_RECOVERY,
+  // Arquivos do chat (até 5 MB) passam pelo socket; o padrão é 1 MB
+  maxHttpBufferSize: MAX_SOCKET_PAYLOAD_BYTES,
 });
 
 export { prisma };
