@@ -13,7 +13,10 @@ function required(name: string): string {
 export const env = {
   NODE_ENV: process.env.NODE_ENV ?? "development",
   PORT: Number(process.env.PORT ?? 3333),
-  CLIENT_URL: process.env.CLIENT_URL ?? "http://localhost:5173",
+  // Vai no header Access-Control-Allow-Origin, que é comparado letra por letra
+  // e não aceita quebra de linha: remove espaços/Enter colados no painel e a
+  // barra final.
+  CLIENT_URL: (process.env.CLIENT_URL?.trim() || "http://localhost:5173").replace(/\/+$/, ""),
   JWT_SECRET: required("JWT_SECRET"),
   JWT_EXPIRES_IN: process.env.JWT_EXPIRES_IN ?? "8h",
   // Quantos proxies confiáveis ficam na frente do app (Express "trust proxy").
