@@ -33,6 +33,23 @@ function formatDateTime(iso: string): { date: string; time: string } {
   return { date, time };
 }
 
+// Formata uma data no formato do input datetime-local ("2026-11-04T18:01"),
+// no fuso local do navegador.
+function toDateTimeLocal(d: Date): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return (
+    `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` +
+    `T${pad(d.getHours())}:${pad(d.getMinutes())}`
+  );
+}
+
+// Início do minuto atual: o input só tem precisão de minutos.
+function startOfCurrentMinute(): Date {
+  const now = new Date();
+  now.setSeconds(0, 0);
+  return now;
+}
+
 export const Dashboard: React.FC = () => {
   const navigate = useNavigate();
   const { psychologist, logout: storeLogout } = useAuthStore();
@@ -44,6 +61,9 @@ export const Dashboard: React.FC = () => {
   // Formulário de nova sessão
   const [showForm, setShowForm] = useState(false);
   const [scheduledAt, setScheduledAt] = useState("");
+  // true enquanto o campo mostra o horário preenchido automaticamente
+  // (o psicólogo não escolheu outro). Nesse caso a sessão é "para agora".
+  const [isDefaultTime, setIsDefaultTime] = useState(true);
   const [durationMinutes, setDurationMinutes] = useState(50);
   const [formError, setFormError] = useState("");
   const [formLoading, setFormLoading] = useState(false);
@@ -104,25 +124,33 @@ export const Dashboard: React.FC = () => {
       setFormError("Informe a data e hora da sessão.");
       return;
     }
-    if (new Date(scheduledAt) <= new Date()) {
-      setFormError("A data e hora devem ser no futuro.");
-      return;
-    }
     if (durationMinutes < 1) {
       setFormError("A duração deve ser de pelo menos 1 minuto.");
       return;
     }
+
+    // Horário não alterado (ex.: abriu o formulário às 6:00 e só enviou às
+    // 6:10) ou igual ao minuto atual → a sessão é para agora. Só um horário
+    // escolhido no passado é recusado.
+    const selected = new Date(scheduledAt);
+    const startsNow = isDefaultTime || selected >= startOfCurrentMinute();
+    if (!startsNow) {
+      setFormError("Escolha o horário atual ou um horário futuro.");
+      return;
+    }
+    const startAt = selected > new Date() ? selected : new Date();
 
     setFormLoading(true);
     try {
       // O input datetime-local não tem fuso ("2026-10-31T03:40"); o backend
       // exige ISO 8601 completo, então convertemos do horário local para UTC.
       await sessionService.createSession({
-        scheduledAt: new Date(scheduledAt).toISOString(),
+        scheduledAt: startAt.toISOString(),
         durationMinutes,
       });
       setShowForm(false);
       setScheduledAt("");
+      setIsDefaultTime(true);
       setDurationMinutes(50);
       await fetchSessions();
     } catch (err: unknown) {
@@ -157,7 +185,16 @@ export const Dashboard: React.FC = () => {
         <div className="flex items-center justify-between">
           <h2 className="text-lg font-semibold text-gray-800">Suas Sessões</h2>
           <button
-            onClick={() => setShowForm((v) => !v)}
+            onClick={() => {
+              if (!showForm) {
+                // Abre já com o horário atual; o psicólogo só altera se
+                // quiser agendar para depois.
+                setScheduledAt(toDateTimeLocal(new Date()));
+                setIsDefaultTime(true);
+                setFormError("");
+              }
+              setShowForm((v) => !v);
+            }}
             className="bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold px-4 py-2 rounded"
             aria-expanded={showForm}
             aria-controls="new-session-form"
@@ -184,7 +221,10 @@ export const Dashboard: React.FC = () => {
                   id="scheduledAt"
                   type="datetime-local"
                   value={scheduledAt}
-                  onChange={(e) => setScheduledAt(e.target.value)}
+                  onChange={(e) => {
+                    setScheduledAt(e.target.value);
+                    setIsDefaultTime(false);
+                  }}
                   className="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                   required
                 />
