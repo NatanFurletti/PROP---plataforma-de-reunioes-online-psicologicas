@@ -1,7 +1,9 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { Navigate, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { ChatPanel } from "../components/ChatPanel";
 import { ControlButton } from "../components/ControlButton";
 import { VideoTile } from "../components/VideoTile";
+import { useChat } from "../hooks/useChat";
 import { usePictureInPicture } from "../hooks/usePictureInPicture";
 import { useWakeLock } from "../hooks/useWakeLock";
 import { useWebRTC, type RemoteParticipant } from "../hooks/useWebRTC";
@@ -134,6 +136,7 @@ const VideoCallInner: React.FC<VideoCallInnerProps> = ({
   const navigate = useNavigate();
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [showConfirmEnd, setShowConfirmEnd] = useState(false);
+  const [isChatOpen, setIsChatOpen] = useState(false);
 
   // Guarda a chave do paciente: voltar pelo link (nova aba, reload) não
   // pede o nome de novo nem, depois de aprovado, nova aprovação
@@ -170,6 +173,7 @@ const VideoCallInner: React.FC<VideoCallInnerProps> = ({
     isMicMuted,
     isCameraOff,
     connectionState,
+    socket,
     toggleMic,
     toggleCamera,
     admitGuest,
@@ -188,6 +192,18 @@ const VideoCallInner: React.FC<VideoCallInnerProps> = ({
   });
 
   useWakeLock(true);
+
+  const {
+    messages: chatMessages,
+    unreadCount,
+    sendMessage,
+  } = useChat({
+    socket,
+    enabled: admissionStatus === "admitted",
+    isOpen: isChatOpen,
+    selfName: patientName ?? "Psicólogo",
+    selfRole: role,
+  });
 
   // Janela flutuante: mostra o psicólogo (para o paciente) ou o primeiro
   // participante com vídeo (para o psicólogo)
@@ -344,7 +360,7 @@ const VideoCallInner: React.FC<VideoCallInnerProps> = ({
         <section
           aria-label="Pedidos para entrar na sessão"
           aria-live="polite"
-          className="absolute top-14 right-4 z-30 w-80 max-w-[calc(100%-2rem)] space-y-2"
+          className="absolute top-14 right-4 z-50 w-80 max-w-[calc(100%-2rem)] space-y-2"
         >
           {waitingGuests.map((guest) => (
             <div
@@ -387,6 +403,7 @@ const VideoCallInner: React.FC<VideoCallInnerProps> = ({
         </section>
       )}
 
+      <div className="flex-1 flex min-h-0">
       {/* Área de vídeo */}
       <div className="flex-1 relative overflow-hidden">
         {participants.length > 0 ? (
@@ -420,6 +437,15 @@ const VideoCallInner: React.FC<VideoCallInnerProps> = ({
         </div>
       </div>
 
+      {isChatOpen && (
+        <ChatPanel
+          messages={chatMessages}
+          onSend={sendMessage}
+          onClose={() => setIsChatOpen(false)}
+        />
+      )}
+      </div>
+
       {/* Controles */}
       <div className="bg-gray-900 px-4 py-4 flex flex-wrap justify-center items-center gap-3">
         <ControlButton
@@ -448,6 +474,27 @@ const VideoCallInner: React.FC<VideoCallInnerProps> = ({
             🗗 Janela
           </ControlButton>
         )}
+
+        <ControlButton
+          onClick={() => setIsChatOpen((open) => !open)}
+          variant={isChatOpen ? "primary" : "secondary"}
+          ariaPressed={isChatOpen}
+          ariaLabel={
+            unreadCount > 0
+              ? `Chat, ${unreadCount} ${unreadCount === 1 ? "mensagem nova" : "mensagens novas"}`
+              : "Chat"
+          }
+        >
+          💬 Chat
+          {unreadCount > 0 && (
+            <span
+              aria-hidden="true"
+              className="absolute -top-1 -right-1 min-w-[1.25rem] h-5 px-1 rounded-full bg-red-500 text-white text-xs font-bold flex items-center justify-center"
+            >
+              {unreadCount > 9 ? "9+" : unreadCount}
+            </span>
+          )}
+        </ControlButton>
 
         <ControlButton onClick={handleEndClick} variant="danger">
           {role === "host" ? "Encerrar" : "Sair"}

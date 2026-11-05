@@ -117,8 +117,9 @@ describe("Dashboard — criar sessão", () => {
 
     await userEvent.click(screen.getByRole("button", { name: /nova sessão/i }));
 
-    const future = "2026-12-01T15:00";
+    const future = "2099-12-01T15:00";
     const input = screen.getByLabelText(/data e hora/i);
+    await userEvent.clear(input);
     await userEvent.type(input, future);
 
     listSessions.mockClear();
@@ -132,5 +133,50 @@ describe("Dashboard — criar sessão", () => {
     await waitFor(() => expect(createSession).toHaveBeenCalled());
     // A lista deve ser recarregada apos a criacao
     await waitFor(() => expect(listSessions).toHaveBeenCalled());
+  });
+
+  it("abre com o horário atual preenchido", async () => {
+    renderDashboard();
+    await screen.findByText("Agendada");
+    await userEvent.click(screen.getByRole("button", { name: /nova sessão/i }));
+
+    const input = screen.getByLabelText(/data e hora/i) as HTMLInputElement;
+    expect(input.value).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/);
+    const diff = Math.abs(new Date(input.value).getTime() - Date.now());
+    expect(diff).toBeLessThan(2 * 60_000);
+  });
+
+  it("cria a sessão para agora mesmo se o horário padrão já passou", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date(2026, 10, 4, 6, 0));
+    renderDashboard();
+    await screen.findByText("Agendada");
+    await userEvent.click(screen.getByRole("button", { name: /nova sessão/i }));
+
+    // O psicólogo deixa o formulário aberto e só envia 10 minutos depois
+    vi.setSystemTime(new Date(2026, 10, 4, 6, 10));
+    const form = screen.getByRole("region", { name: /formulário de nova sessão/i });
+    await userEvent.click(within(form).getByRole("button", { name: /criar/i }));
+
+    await waitFor(() => expect(createSession).toHaveBeenCalled());
+    const sent = new Date(createSession.mock.calls[0][0].scheduledAt);
+    expect(sent.getTime()).toBeGreaterThanOrEqual(new Date(2026, 10, 4, 6, 10).getTime());
+    expect(screen.queryByText(/horário futuro/i)).not.toBeInTheDocument();
+    vi.useRealTimers();
+  });
+
+  it("recusa um horário escolhido no passado", async () => {
+    renderDashboard();
+    await screen.findByText("Agendada");
+    await userEvent.click(screen.getByRole("button", { name: /nova sessão/i }));
+
+    const input = screen.getByLabelText(/data e hora/i);
+    await userEvent.clear(input);
+    await userEvent.type(input, "2020-01-01T10:00");
+    const form = screen.getByRole("region", { name: /formulário de nova sessão/i });
+    await userEvent.click(within(form).getByRole("button", { name: /criar/i }));
+
+    expect(await screen.findByText(/horário futuro/i)).toBeInTheDocument();
+    expect(createSession).not.toHaveBeenCalled();
   });
 });
