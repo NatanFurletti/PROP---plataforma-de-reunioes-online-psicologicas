@@ -35,7 +35,9 @@ export const authService = {
   login: (data: { email: string; password: string }) =>
     api.post("/auth/login", data),
   logout: () => api.post("/auth/logout"),
-  me: () => api.get("/auth/me"),
+  // Timeout: com o backend dormindo (Render gratuito) a requisição pode ficar
+  // pendurada; o bootstrap tenta de novo em vez de esperar para sempre
+  me: (timeoutMs?: number) => api.get("/auth/me", { timeout: timeoutMs }),
   verifyEmail: (token: string) => api.get(`/auth/verify-email/${token}`),
   forgotPassword: (email: string) =>
     api.post("/auth/forgot-password", { email }),
