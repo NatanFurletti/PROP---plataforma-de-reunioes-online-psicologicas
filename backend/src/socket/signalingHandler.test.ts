@@ -922,11 +922,11 @@ describe("signaling — chat da chamada", () => {
     expect(Buffer.from(file.data).equals(png)).toBe(true);
   });
 
-  it("aceita arquivo perto do limite de 5 MB", async () => {
+  it("aceita arquivo perto do limite de 10 MB", async () => {
     const host = await connectHost();
     const { guest } = await joinAndAdmit(host);
 
-    const big = Buffer.alloc(5 * 1024 * 1024);
+    const big = Buffer.alloc(10 * 1024 * 1024);
     Buffer.from("%PDF").copy(big);
     const atGuest = waitFor<{ file: { size: number } }>(guest, "chat-message", 3000);
     const ack = await sendChat(host, { file: { name: "a.pdf", data: big } });

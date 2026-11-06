@@ -4,7 +4,7 @@
 // gravado (texto ou arquivo). Quem entra depois não vê o que já foi dito.
 
 export const MAX_CHAT_TEXT_LENGTH = 2000;
-export const MAX_CHAT_FILE_BYTES = 5 * 1024 * 1024;
+export const MAX_CHAT_FILE_BYTES = 10 * 1024 * 1024;
 const MAX_FILE_NAME_LENGTH = 120;
 
 // Limite de um pacote do Socket.IO. O arquivo vai como anexo binário, que

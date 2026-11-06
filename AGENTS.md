@@ -201,13 +201,13 @@ Paciente (novo)            Servidor (Signaling)         Psicólogo (Host)
 - **Nada é gravado:** o servidor valida e repassa aos demais da sala (sem
   log do conteúdo). As mensagens vivem só na memória de cada aba; quem
   entra depois não vê o histórico, e recarregar a página o apaga.
-- Texto até 2000 caracteres. Arquivos até 5 MB, enviados como binário:
+- Texto até 2000 caracteres. Arquivos até 10 MB, enviados como binário:
   imagens (PNG, JPG, GIF, WEBP) e documentos (PDF, TXT, RTF, DOC, DOCX,
   ODT). O servidor define o tipo pela extensão e confere a assinatura do
   conteúdo (SVG/HTML nunca são aceitos). Lista em `socket/chat.ts`,
   espelhada em `frontend/src/utils/chatFiles.ts`.
-- Por isso `maxHttpBufferSize` do Socket.IO é ~5 MB (padrão é 1 MB).
-- Limite por socket: 10 mensagens e 15 MB de arquivos a cada 10 s.
+- Por isso `maxHttpBufferSize` do Socket.IO é ~10 MB (padrão é 1 MB).
+- Limite por socket: 10 mensagens e 30 MB de arquivos a cada 10 s.
 - O remetente recebe ack `{ ok, id, sentAt }` ou `{ ok: false, error }`
   e não recebe o próprio eco.
 

@@ -1,7 +1,7 @@
 // Arquivos aceitos no chat da chamada. Espelha a lista do backend
 // (backend/src/socket/chat.ts), que é quem decide de fato.
 
-export const MAX_CHAT_FILE_BYTES = 5 * 1024 * 1024;
+export const MAX_CHAT_FILE_BYTES = 10 * 1024 * 1024;
 export const MAX_CHAT_TEXT_LENGTH = 2000;
 
 const TYPES_BY_EXTENSION: Record<string, string> = {
@@ -45,7 +45,7 @@ export function validateChatFile(file: File): string | null {
     return "Tipo de arquivo não permitido. Envie imagens (PNG, JPG, GIF, WEBP) ou documentos (PDF, TXT, DOC, DOCX, ODT, RTF).";
   }
   if (file.size === 0) return "O arquivo está vazio.";
-  if (file.size > MAX_CHAT_FILE_BYTES) return "O arquivo passa do limite de 5 MB.";
+  if (file.size > MAX_CHAT_FILE_BYTES) return "O arquivo passa do limite de 10 MB.";
   return null;
 }
 

@@ -27,7 +27,7 @@ export const io = new SocketIOServer(httpServer, {
   // No celular, trocar de app derruba o WebSocket. A recuperação devolve o
   // mesmo socket.id e entrega as mensagens perdidas durante a queda.
   connectionStateRecovery: CONNECTION_STATE_RECOVERY,
-  // Arquivos do chat (até 5 MB) passam pelo socket; o padrão é 1 MB
+  // Arquivos do chat (até 10 MB) passam pelo socket; o padrão é 1 MB
   maxHttpBufferSize: MAX_SOCKET_PAYLOAD_BYTES,
 });
 
