@@ -25,6 +25,15 @@ export interface RemoteParticipant {
   // Quadros de vídeo chegando agora. false = sem câmera, vídeo parado (aba
   // em segundo plano, queda) — a UI mostra um avatar em vez do quadro congelado
   isVideoFlowing: boolean;
+  // Microfone desligado (pelo próprio participante ou pelo psicólogo)
+  isMicMuted: boolean;
+}
+
+interface PeerInfo {
+  peerId: string;
+  role: Role;
+  name: string;
+  micMuted?: boolean;
 }
 
 export interface WaitingGuest {
@@ -47,6 +56,8 @@ interface UseWebRTCOptions {
   onAdmissionDenied?: () => void;
   onSessionEnded?: () => void;
   onRoomFull?: () => void;
+  // O psicólogo desligou o microfone deste participante
+  onForceMuted?: () => void;
   onError?: (error: Error) => void;
 }
 
@@ -65,6 +76,8 @@ interface UseWebRTCReturn {
   toggleCamera: () => void;
   admitGuest: (guestId: string) => void;
   denyGuest: (guestId: string) => void;
+  // Host: desliga o microfone de outro participante (só ele religa)
+  muteParticipant: (peerId: string) => void;
   endCall: () => void;
 }
 
@@ -116,10 +129,15 @@ function buildIceServers(): RTCIceServer[] {
     { urls: "stun:stun.l.google.com:19302" },
     { urls: "stun:stun1.l.google.com:19302" },
   ];
-  const turnUrl = import.meta.env.VITE_TURN_URL as string | undefined;
-  if (turnUrl) {
+  // Aceita várias URLs separadas por vírgula (ex.: UDP 80, TCP 443 e TLS
+  // 443): redes que bloqueiam UDP ainda conectam pelo TURN via 443
+  const turnUrls = ((import.meta.env.VITE_TURN_URL as string | undefined) ?? "")
+    .split(",")
+    .map((url) => url.trim())
+    .filter(Boolean);
+  if (turnUrls.length > 0) {
     iceServers.push({
-      urls: turnUrl,
+      urls: turnUrls,
       username: import.meta.env.VITE_TURN_USERNAME as string,
       credential: import.meta.env.VITE_TURN_CREDENTIAL as string,
     });
@@ -149,6 +167,7 @@ export const useWebRTC = ({
   onAdmissionDenied,
   onSessionEnded,
   onRoomFull,
+  onForceMuted,
   onError,
 }: UseWebRTCOptions): UseWebRTCReturn => {
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
@@ -158,6 +177,8 @@ export const useWebRTC = ({
     role === "host" ? "admitted" : "pending",
   );
   const [isMicMuted, setIsMicMuted] = useState(false);
+  // Valor atual para handlers do socket (join-room, room-peers)
+  const micMutedRef = useRef(false);
   const [isCameraOff, setIsCameraOff] = useState(false);
   // Estado da mídia local; o estado da chamada é derivado dos participantes
   const [mediaState, setMediaState] = useState<"idle" | "ready" | "failed">(
@@ -179,6 +200,7 @@ export const useWebRTC = ({
     onAdmissionDenied,
     onSessionEnded,
     onRoomFull,
+    onForceMuted,
     onError,
   });
   useEffect(() => {
@@ -188,9 +210,27 @@ export const useWebRTC = ({
       onAdmissionDenied,
       onSessionEnded,
       onRoomFull,
+      onForceMuted,
       onError,
     };
-  }, [onAdmissionKey, onAdmitted, onAdmissionDenied, onSessionEnded, onRoomFull, onError]);
+  }, [
+    onAdmissionKey,
+    onAdmitted,
+    onAdmissionDenied,
+    onSessionEnded,
+    onRoomFull,
+    onForceMuted,
+    onError,
+  ]);
+
+  // Liga/desliga o microfone local e avisa os demais participantes
+  const applyMicMuted = useCallback((muted: boolean) => {
+    const audioTrack = localStreamRef.current?.getAudioTracks()[0];
+    if (audioTrack) audioTrack.enabled = !muted;
+    micMutedRef.current = muted;
+    setIsMicMuted(muted);
+    socketRef.current?.emit("mic-state", { muted });
+  }, []);
 
   const reportError = useCallback((err: unknown, fallback: string) => {
     callbacksRef.current.onError?.(toError(err, fallback));
@@ -211,6 +251,7 @@ export const useWebRTC = ({
               stream: null,
               connectionState: "connecting",
               isVideoFlowing: false,
+              isMicMuted: false,
               ...patch,
             },
           ];
@@ -573,7 +614,7 @@ export const useWebRTC = ({
           // Socket recuperado (mesmo id, ex.: voltou do segundo plano): as
           // conexões P2P continuam valendo. O join só confirma a volta ao
           // servidor; depois tenta reanimar as conexões que caíram.
-          socket.emit("join-room");
+          socket.emit("join-room", { micMuted: micMutedRef.current });
           recoverPeers();
           return;
         }
@@ -584,7 +625,7 @@ export const useWebRTC = ({
           if (role === "guest") setAdmissionStatus("pending");
         }
         hasConnected = true;
-        socket.emit("join-room");
+        socket.emit("join-room", { micMuted: micMutedRef.current });
       };
 
       socket.on("connect", () => {
@@ -651,9 +692,12 @@ export const useWebRTC = ({
       // Quem acaba de entrar recebe a lista de quem já está e cria as offers
       socket.on(
         "room-peers",
-        ({ peers }: { peers: { peerId: string; role: Role; name: string }[] }) => {
+        ({ peers }: { peers: PeerInfo[] }) => {
           if (cancelled) return;
           setAdmissionStatus("admitted");
+          // Garante que os demais vejam o estado atual do microfone (pode ter
+          // mudado enquanto aguardava a aprovação)
+          socket.emit("mic-state", { muted: micMutedRef.current });
           // room-peers é a foto completa da sala na entrada: conexões que
           // sobraram de antes (ex.: tolerância expirou) não valem mais
           closeAllPeers();
@@ -662,6 +706,7 @@ export const useWebRTC = ({
               role: peer.role,
               name: peer.name,
               connectionState: "connecting",
+              isMicMuted: peer.micMuted === true,
             });
             createPeer(peer.peerId, true);
             void sendOffer(peer.peerId);
@@ -672,15 +717,36 @@ export const useWebRTC = ({
       // Os demais só registram quem chegou e aguardam a offer
       socket.on(
         "user-joined",
-        ({ peerId, role: peerRole, name: peerName }: { peerId: string; role: Role; name: string }) => {
+        ({ peerId, role: peerRole, name: peerName, micMuted }: PeerInfo) => {
           if (cancelled) return;
           upsertParticipant(peerId, {
             role: peerRole,
             name: peerName,
             connectionState: "connecting",
+            isMicMuted: micMuted === true,
           });
         },
       );
+
+      // --- Microfone ---
+      socket.on(
+        "peer-mic-state",
+        ({ peerId, muted }: { peerId: string; muted: boolean }) => {
+          if (cancelled) return;
+          // Só atualiza quem já está na lista (evita criar um par fantasma)
+          setParticipants((prev) =>
+            prev.map((p) => (p.peerId === peerId ? { ...p, isMicMuted: muted } : p)),
+          );
+        },
+      );
+
+      // O psicólogo desligou este microfone. Fica mudo até a própria
+      // pessoa religar.
+      socket.on("force-muted", () => {
+        if (cancelled) return;
+        applyMicMuted(true);
+        callbacksRef.current.onForceMuted?.();
+      });
 
       socket.on(
         "offer",
@@ -791,13 +857,22 @@ export const useWebRTC = ({
     setWaitingGuests((prev) => prev.filter((g) => g.guestId !== guestId));
   }, []);
 
+  const muteParticipant = useCallback(
+    (peerId: string) => {
+      if (role !== "host") return;
+      socketRef.current?.emit("mute-participant", { peerId });
+      // Mostra o mudo na hora; o servidor confirma via peer-mic-state
+      setParticipants((prev) =>
+        prev.map((p) => (p.peerId === peerId ? { ...p, isMicMuted: true } : p)),
+      );
+    },
+    [role],
+  );
+
   const toggleMic = useCallback(() => {
     const audioTrack = localStreamRef.current?.getAudioTracks()[0];
-    if (audioTrack) {
-      audioTrack.enabled = !audioTrack.enabled;
-      setIsMicMuted(!audioTrack.enabled);
-    }
-  }, []);
+    if (audioTrack) applyMicMuted(audioTrack.enabled);
+  }, [applyMicMuted]);
 
   // Liga a câmera quando a chamada começou sem ela (estava ocupada)
   const startingCameraRef = useRef(false);
@@ -914,6 +989,7 @@ export const useWebRTC = ({
     toggleCamera,
     admitGuest,
     denyGuest,
+    muteParticipant,
     endCall,
   };
 };

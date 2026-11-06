@@ -423,8 +423,8 @@ describe("signaling — sala de espera e aprovação", () => {
     const { guest, peers, admissionKey } = await joinAndAdmit(host);
 
     expect(admissionKey).toEqual(expect.any(String));
-    expect(peers).toEqual([{ peerId: host.id, role: "host", name: "Psicólogo" }]);
-    expect(await joined).toEqual({ peerId: guest.id, role: "guest", name: "Maria" });
+    expect(peers).toEqual([{ peerId: host.id, role: "host", name: "Psicólogo", micMuted: false }]);
+    expect(await joined).toEqual({ peerId: guest.id, role: "guest", name: "Maria", micMuted: false });
   });
 
   it("host recusa: paciente recebe admission-denied e não entra", async () => {
@@ -590,6 +590,7 @@ describe("signaling — vários participantes", () => {
       peerId: second.guest.id,
       role: "guest",
       name: "João",
+      micMuted: false,
     });
   });
 
@@ -626,7 +627,7 @@ describe("signaling — vários participantes", () => {
     expect(await replaced).not.toBeNull();
     expect(await left).toEqual({ peerId: firstId });
     expect((await roomPeers)?.peers).toEqual([
-      { peerId: guest.id, role: "guest", name: "Maria" },
+      { peerId: guest.id, role: "guest", name: "Maria", micMuted: false },
     ]);
   });
 
@@ -691,6 +692,108 @@ describe("signaling — encaminhamento entre pares", () => {
     const received = waitFor(waitingGuest, "offer");
     host.emit("offer", { to: waitingGuest.id, offer: { type: "offer", sdp: "x" } });
     expect(await received).toBeNull();
+  });
+});
+
+describe("signaling — microfone dos participantes", () => {
+  it("avisa os demais quando alguém muta ou desmuta o próprio microfone", async () => {
+    const host = await connectHost();
+    const maria = await joinAndAdmit(host, "Maria");
+    const joao = await joinAndAdmit(host, "João");
+
+    const atHost = waitFor(host, "peer-mic-state");
+    const atJoao = waitFor(joao.guest, "peer-mic-state");
+    const atSelf = waitFor(maria.guest, "peer-mic-state");
+    maria.guest.emit("mic-state", { muted: true });
+
+    expect(await atHost).toEqual({ peerId: maria.guest.id, muted: true });
+    expect(await atJoao).toEqual({ peerId: maria.guest.id, muted: true });
+    expect(await atSelf).toBeNull();
+
+    const unmuted = waitFor(host, "peer-mic-state");
+    maria.guest.emit("mic-state", { muted: false });
+    expect(await unmuted).toEqual({ peerId: maria.guest.id, muted: false });
+  });
+
+  it("quem entra recebe o estado do microfone de quem já está", async () => {
+    const host = await connectHost();
+    const stateChanged = waitFor(host, "peer-mic-state");
+    const maria = await joinAndAdmit(host, "Maria");
+    maria.guest.emit("mic-state", { muted: true });
+    await stateChanged;
+
+    const joined = waitFor<PeerInfo>(host, "user-joined", 1000);
+    const joao = await joinAndAdmit(host, "João");
+    expect(joao.peers).toEqual(
+      expect.arrayContaining([
+        { peerId: maria.guest.id, role: "guest", name: "Maria", micMuted: true },
+      ]),
+    );
+    expect(await joined).toMatchObject({ name: "João", micMuted: false });
+  });
+
+  it("join-room informa se quem entra já está mutado", async () => {
+    const host = makeClient({ role: "host", jwtCookie: hostJwt() });
+    await tryConnect(host);
+    const peers = waitFor(host, "room-peers");
+    host.emit("join-room", { micMuted: true });
+    await peers;
+
+    const { peers: guestPeers } = await joinAndAdmit(host);
+    expect(guestPeers).toEqual([
+      { peerId: host.id, role: "host", name: "Psicólogo", micMuted: true },
+    ]);
+  });
+
+  it("host muta um paciente: o paciente é avisado e todos veem o mudo", async () => {
+    const host = await connectHost();
+    const maria = await joinAndAdmit(host, "Maria");
+    const joao = await joinAndAdmit(host, "João");
+
+    const forced = waitFor(maria.guest, "force-muted");
+    const atHost = waitFor(host, "peer-mic-state");
+    const atJoao = waitFor(joao.guest, "peer-mic-state");
+    host.emit("mute-participant", { peerId: maria.guest.id });
+
+    expect(await forced).not.toBeNull();
+    expect(await atHost).toEqual({ peerId: maria.guest.id, muted: true });
+    expect(await atJoao).toEqual({ peerId: maria.guest.id, muted: true });
+
+    // Só o próprio paciente desmuta
+    const unmuted = waitFor(joao.guest, "peer-mic-state");
+    maria.guest.emit("mic-state", { muted: false });
+    expect(await unmuted).toEqual({ peerId: maria.guest.id, muted: false });
+  });
+
+  it("paciente não consegue mutar outro participante", async () => {
+    const host = await connectHost();
+    const maria = await joinAndAdmit(host, "Maria");
+    const joao = await joinAndAdmit(host, "João");
+
+    const forced = waitFor(joao.guest, "force-muted");
+    const forcedHost = waitFor(host, "force-muted");
+    maria.guest.emit("mute-participant", { peerId: joao.guest.id });
+    maria.guest.emit("mute-participant", { peerId: host.id });
+
+    expect(await forced).toBeNull();
+    expect(await forcedHost).toBeNull();
+  });
+
+  it("ignora mute de quem não está na chamada e mic-state inválido", async () => {
+    const host = await connectHost();
+    const { guest } = await joinAndAdmit(host);
+    const request = waitFor<{ guestId: string }>(host, "guest-waiting");
+    const waiting = await connectAndJoin({ role: "guest", accessToken: ACCESS_TOKEN, name: "Ana" });
+    await request;
+
+    const forced = waitFor(waiting, "force-muted");
+    host.emit("mute-participant", { peerId: waiting.id });
+    expect(await forced).toBeNull();
+
+    const atHost = waitFor(host, "peer-mic-state");
+    guest.emit("mic-state", { muted: "sim" });
+    waiting.emit("mic-state", { muted: true });
+    expect(await atHost).toBeNull();
   });
 });
 
@@ -803,7 +906,7 @@ describe("signaling — quedas involuntárias (app em segundo plano)", () => {
 
     expect(await left).toEqual({ peerId: oldId });
     expect((await roomPeers)?.peers).toEqual([
-      { peerId: host.id, role: "host", name: "Psicólogo" },
+      { peerId: host.id, role: "host", name: "Psicólogo", micMuted: false },
     ]);
   });
 
@@ -821,7 +924,7 @@ describe("signaling — quedas involuntárias (app em segundo plano)", () => {
 
     expect(await left).toEqual({ peerId: oldHostId });
     expect((await roomPeers)?.peers).toEqual([
-      { peerId: guest.id, role: "guest", name: "Maria" },
+      { peerId: guest.id, role: "guest", name: "Maria", micMuted: false },
     ]);
   });
 
@@ -922,11 +1025,11 @@ describe("signaling — chat da chamada", () => {
     expect(Buffer.from(file.data).equals(png)).toBe(true);
   });
 
-  it("aceita arquivo perto do limite de 5 MB", async () => {
+  it("aceita arquivo perto do limite de 10 MB", async () => {
     const host = await connectHost();
     const { guest } = await joinAndAdmit(host);
 
-    const big = Buffer.alloc(5 * 1024 * 1024);
+    const big = Buffer.alloc(10 * 1024 * 1024);
     Buffer.from("%PDF").copy(big);
     const atGuest = waitFor<{ file: { size: number } }>(guest, "chat-message", 3000);
     const ack = await sendChat(host, { file: { name: "a.pdf", data: big } });

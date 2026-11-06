@@ -55,8 +55,8 @@ interface UseChatReturn {
   sendMessage: (text: string, file?: File | null) => Promise<string | null>;
 }
 
-// Upload de até 5 MB numa conexão móvel lenta pode demorar
-const SEND_TIMEOUT_MS = 60_000;
+// Upload de até 10 MB numa conexão móvel lenta pode demorar
+const SEND_TIMEOUT_MS = 120_000;
 
 const SERVER_ERRORS: Record<string, string> = {
   "not-in-call": "Você não está na chamada.",

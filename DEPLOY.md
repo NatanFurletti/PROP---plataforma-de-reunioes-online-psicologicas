@@ -71,7 +71,8 @@ O `CLIENT_URL` libera o WebSocket (CORS) e monta os links dos e-mails.
   ~1 min. Durante a chamada, a página faz um ping a cada 4 min para mantê-lo acordado.
 - **Sem servidor TURN:** a chamada usa só STUN. Algumas redes (4G de algumas
   operadoras, redes corporativas) podem não conectar. Para resolver, configure um
-  TURN (ex.: plano free da Metered) e preencha `VITE_TURN_*`.
+  TURN (ex.: plano free da Metered) e preencha `VITE_TURN_*`. `VITE_TURN_URL`
+  aceita várias URLs separadas por vírgula; inclua as de TCP/TLS na porta 443.
 - **E-mails não são enviados:** os links de verificação e de redefinição de senha
   aparecem nos **logs do Render**. Falta implementar um `EmailDriver` (SMTP/Resend).
 - **Salas em memória:** um restart do backend (deploy novo, sono) derruba as

@@ -83,6 +83,8 @@ palas/
 ### Módulo de Videochamada
 - **Vídeo e áudio bidirecional** via WebRTC peer-to-peer
 - **Controles de sessão:** mutar microfone, ativar/desativar câmera, encerrar chamada
+- **Mutar participantes:** o psicólogo desliga o microfone de qualquer participante; só a própria pessoa religa
+- **Ícone de mudo:** quem está com o microfone desligado aparece com o ícone vermelho para todos
 - **Indicadores visuais:** status de conexão, nível de áudio, câmera ativa
 - **Sala de espera com aprovação:** o paciente informa o nome e aguarda; o psicólogo vê o pedido e admite ou recusa cada entrada
 - **Vários participantes:** até `MAX_ROOM_PARTICIPANTS` pessoas por sala (padrão 6, psicólogo incluso)
@@ -195,19 +197,28 @@ Paciente (novo)            Servidor (Signaling)         Psicólogo (Host)
   como ativa (metadados + `playbackState: "playing"`) e garante o vídeo
   tocando; o navegador ainda decide se abre. O botão só aparece se houver suporte.
 
+**Microfone (`mic-state` / `mute-participant`):**
+- O servidor guarda `micMuted` de cada participante e o envia em
+  `room-peers` e `user-joined`; `join-room` aceita `{ micMuted }` para quem
+  entra já mutado (reconexão). Cada mudança vira `peer-mic-state` para os
+  demais da sala.
+- Só o host emite `mute-participant` (servidor revalida o role). O alvo
+  recebe `force-muted`, desliga o próprio track de áudio e fica mudo até
+  religar manualmente — não existe "desmutar outra pessoa".
+
 **Chat da chamada (`chat-message`):**
 - Passa pelo mesmo socket da sinalização. Só participantes **admitidos**
   enviam e recebem — paciente em espera não vê o chat.
 - **Nada é gravado:** o servidor valida e repassa aos demais da sala (sem
   log do conteúdo). As mensagens vivem só na memória de cada aba; quem
   entra depois não vê o histórico, e recarregar a página o apaga.
-- Texto até 2000 caracteres. Arquivos até 5 MB, enviados como binário:
+- Texto até 2000 caracteres. Arquivos até 10 MB, enviados como binário:
   imagens (PNG, JPG, GIF, WEBP) e documentos (PDF, TXT, RTF, DOC, DOCX,
   ODT). O servidor define o tipo pela extensão e confere a assinatura do
   conteúdo (SVG/HTML nunca são aceitos). Lista em `socket/chat.ts`,
   espelhada em `frontend/src/utils/chatFiles.ts`.
-- Por isso `maxHttpBufferSize` do Socket.IO é ~5 MB (padrão é 1 MB).
-- Limite por socket: 10 mensagens e 15 MB de arquivos a cada 10 s.
+- Por isso `maxHttpBufferSize` do Socket.IO é ~10 MB (padrão é 1 MB).
+- Limite por socket: 10 mensagens e 30 MB de arquivos a cada 10 s.
 - O remetente recebe ack `{ ok, id, sentAt }` ou `{ ok: false, error }`
   e não recebe o próprio eco.
 
@@ -365,7 +376,7 @@ virar um oráculo de e-mails cadastrados. Redefinir a senha incrementa
 
 | Evento | Direção | Payload | Descrição |
 |---|---|---|---|
-| `join-room` | Cliente → Servidor | — | Entrar na sala (host direto; guest vai para a espera) |
+| `join-room` | Cliente → Servidor | `{ micMuted? }` | Entrar na sala (host direto; guest vai para a espera) |
 | `admit-guest` / `deny-guest` | Host → Servidor | `{ guestId }` | Aprovar ou recusar um paciente |
 | `offer` | Cliente → Servidor | `{ to, offer }` | Enviar SDP offer a um par |
 | `answer` | Cliente → Servidor | `{ to, answer }` | Enviar SDP answer a um par |
@@ -377,13 +388,17 @@ virar um oráculo de e-mails cadastrados. Redefinir a senha incrementa
 | `guest-waiting` | Servidor → Host | `{ guestId, name }` | Novo pedido de entrada |
 | `waiting-list` | Servidor → Host | `{ guests: [{ guestId, name }] }` | Lista atual de pedidos |
 | `admission-error` | Servidor → Host | `{ guestId, error }` | Não foi possível admitir (sala cheia) |
-| `room-peers` | Servidor → Cliente | `{ peers: [{ peerId, role, name }] }` | Quem já está na chamada (o recém-chegado cria as offers) |
-| `user-joined` | Servidor → Cliente | `{ peerId, role, name }` | Alguém entrou na chamada |
+| `room-peers` | Servidor → Cliente | `{ peers: [{ peerId, role, name, micMuted }] }` | Quem já está na chamada (o recém-chegado cria as offers) |
+| `user-joined` | Servidor → Cliente | `{ peerId, role, name, micMuted }` | Alguém entrou na chamada |
 | `user-left` | Servidor → Cliente | `{ peerId }` | Alguém saiu da chamada |
 | `offer` / `answer` / `ice-candidate` | Servidor → Cliente | `{ from, ... }` | Sinalização vinda de um par |
 | `room-full` | Servidor → Cliente | `{ error }` | Sala cheia ou host duplicado |
 | `session-ended` | Servidor → Cliente | `{}` | Sessão encerrada pelo host |
 | `restart-ice` | Cliente ↔ Servidor | `{ to }` / `{ from }` | Pede ao autor da offer um ICE restart |
+| `mic-state` | Cliente → Servidor | `{ muted }` | Participante ligou/desligou o próprio microfone |
+| `mute-participant` | Host → Servidor | `{ peerId }` | Desligar o microfone de um participante |
+| `peer-mic-state` | Servidor → Cliente | `{ peerId, muted }` | Mudança no microfone de outro participante |
+| `force-muted` | Servidor → Cliente | `{}` | O psicólogo desligou seu microfone |
 | `chat-message` | Cliente → Servidor | `{ text?, file?: { name, data } }` + ack | Mensagem do chat (texto e/ou arquivo binário) |
 | `chat-message` | Servidor → Cliente | `{ id, from, senderName, senderRole, sentAt, text?, file?: { name, type, size, data } }` | Mensagem de outro participante |
 

@@ -197,7 +197,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ messages, onSend, onClose 
             onClick={() => fileInputRef.current?.click()}
             className="shrink-0 rounded-full bg-gray-700 hover:bg-gray-600 text-white w-10 h-10"
             aria-label="Anexar imagem ou documento"
-            title="Anexar imagem ou documento (até 5 MB)"
+            title="Anexar imagem ou documento (até 10 MB)"
           >
             📎
           </button>
