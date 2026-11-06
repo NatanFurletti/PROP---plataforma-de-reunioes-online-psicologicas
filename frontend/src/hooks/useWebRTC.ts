@@ -129,10 +129,15 @@ function buildIceServers(): RTCIceServer[] {
     { urls: "stun:stun.l.google.com:19302" },
     { urls: "stun:stun1.l.google.com:19302" },
   ];
-  const turnUrl = import.meta.env.VITE_TURN_URL as string | undefined;
-  if (turnUrl) {
+  // Aceita várias URLs separadas por vírgula (ex.: UDP 80, TCP 443 e TLS
+  // 443): redes que bloqueiam UDP ainda conectam pelo TURN via 443
+  const turnUrls = ((import.meta.env.VITE_TURN_URL as string | undefined) ?? "")
+    .split(",")
+    .map((url) => url.trim())
+    .filter(Boolean);
+  if (turnUrls.length > 0) {
     iceServers.push({
-      urls: turnUrl,
+      urls: turnUrls,
       username: import.meta.env.VITE_TURN_USERNAME as string,
       credential: import.meta.env.VITE_TURN_CREDENTIAL as string,
     });
