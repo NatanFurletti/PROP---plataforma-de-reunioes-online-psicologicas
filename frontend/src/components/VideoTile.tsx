@@ -3,7 +3,12 @@ import React from "react";
 interface VideoTileProps {
   stream: MediaStream | null;
   label: string;
+  // Silencia a reprodução do <video> (ex.: vídeo local, para não ecoar)
   isMuted?: boolean;
+  // O participante está com o microfone desligado: mostra o ícone de mudo
+  isMicMuted?: boolean;
+  // Host: botão para desligar o microfone deste participante
+  onMuteMic?: () => void;
   // false: cobre o vídeo com um avatar (ex.: par caiu e o quadro congelou).
   // O <video> continua montado por baixo, então o áudio segue tocando.
   showVideo?: boolean;
@@ -17,6 +22,8 @@ export const VideoTile: React.FC<VideoTileProps> = ({
   stream,
   label,
   isMuted = false,
+  isMicMuted = false,
+  onMuteMic,
   showVideo = true,
   status,
   videoRef,
@@ -66,9 +73,55 @@ export const VideoTile: React.FC<VideoTileProps> = ({
           )}
         </div>
       )}
-      <div className="absolute bottom-2 left-2 bg-black bg-opacity-60 px-3 py-1 rounded text-white text-sm">
-        {label}
+      <div className="absolute bottom-2 left-2 right-2 flex items-center gap-2 pointer-events-none">
+        <div className="min-w-0 flex items-center gap-1.5 bg-black bg-opacity-60 px-3 py-1 rounded text-white text-sm">
+          {isMicMuted && (
+            <span
+              role="img"
+              aria-label="Microfone desligado"
+              title="Microfone desligado"
+              data-testid="mic-muted-icon"
+              className="shrink-0 text-red-500"
+            >
+              <MicOffIcon />
+            </span>
+          )}
+          <span className="truncate">{label}</span>
+        </div>
       </div>
+      {onMuteMic && !isMicMuted && (
+        <button
+          type="button"
+          onClick={onMuteMic}
+          aria-label={`Desligar o microfone de ${label}`}
+          title="Desligar microfone"
+          className="absolute top-2 right-2 flex items-center gap-1 px-2 py-1 rounded bg-black bg-opacity-60 hover:bg-red-600 focus:bg-red-600 text-white text-xs transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-white"
+        >
+          <MicOffIcon />
+          Mutar
+        </button>
+      )}
     </div>
   );
 };
+
+// Microfone cortado (ícone em linha, herda a cor do texto)
+const MicOffIcon: React.FC = () => (
+  <svg
+    aria-hidden="true"
+    viewBox="0 0 24 24"
+    width="16"
+    height="16"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+  >
+    <path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V5a3 3 0 0 0-5.94-.6" />
+    <path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2a7 7 0 0 1-.11 1.23" />
+    <line x1="12" y1="19" x2="12" y2="23" />
+    <line x1="8" y1="23" x2="16" y2="23" />
+    <line x1="1" y1="1" x2="23" y2="23" />
+  </svg>
+);

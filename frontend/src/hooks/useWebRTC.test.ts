@@ -792,3 +792,92 @@ describe("useWebRTC — vídeo parado do par", () => {
     vi.useRealTimers();
   });
 });
+
+describe("useWebRTC — microfone dos participantes", () => {
+  it("toggleMic avisa o servidor do novo estado", async () => {
+    const { result } = renderHook(() => useWebRTC(HOST_OPTS));
+    await waitFor(() => expect(result.current.localStream).not.toBeNull());
+
+    act(() => result.current.toggleMic());
+    expect(socketMock.emit).toHaveBeenCalledWith("mic-state", { muted: true });
+    act(() => result.current.toggleMic());
+    expect(socketMock.emit).toHaveBeenCalledWith("mic-state", { muted: false });
+  });
+
+  it("mostra o mudo de quem já estava e de quem entra", async () => {
+    const { result } = renderHook(() => useWebRTC(GUEST_OPTS));
+    await waitFor(() => expect(result.current.localStream).not.toBeNull());
+
+    await act(async () =>
+      serverEmit("room-peers", { peers: [{ ...HOST_PEER, micMuted: true }] }),
+    );
+    await act(async () =>
+      serverEmit("user-joined", { peerId: "guest-2", role: "guest", name: "João", micMuted: false }),
+    );
+
+    const byId = (id: string) => result.current.participants.find((p) => p.peerId === id);
+    expect(byId("host-1")?.isMicMuted).toBe(true);
+    expect(byId("guest-2")?.isMicMuted).toBe(false);
+
+    await act(async () => serverEmit("peer-mic-state", { peerId: "guest-2", muted: true }));
+    expect(byId("guest-2")?.isMicMuted).toBe(true);
+    await act(async () => serverEmit("peer-mic-state", { peerId: "host-1", muted: false }));
+    expect(byId("host-1")?.isMicMuted).toBe(false);
+  });
+
+  it("peer-mic-state de quem não está na chamada é ignorado", async () => {
+    const { result } = renderHook(() => useWebRTC(HOST_OPTS));
+    await waitFor(() => expect(result.current.localStream).not.toBeNull());
+
+    await act(async () => serverEmit("peer-mic-state", { peerId: "ghost", muted: true }));
+    expect(result.current.participants).toHaveLength(0);
+  });
+
+  it("force-muted desliga o microfone local e avisa", async () => {
+    const stream = createFakeStream();
+    stubGetUserMedia(async () => stream);
+    const onForceMuted = vi.fn();
+    const { result } = renderHook(() => useWebRTC({ ...GUEST_OPTS, onForceMuted }));
+    await waitFor(() => expect(result.current.localStream).not.toBeNull());
+
+    await act(async () => serverEmit("force-muted"));
+
+    expect(result.current.isMicMuted).toBe(true);
+    expect(stream.getAudioTracks()[0].enabled).toBe(false);
+    expect(onForceMuted).toHaveBeenCalledTimes(1);
+
+    // Só a própria pessoa religa
+    act(() => result.current.toggleMic());
+    expect(result.current.isMicMuted).toBe(false);
+    expect(stream.getAudioTracks()[0].enabled).toBe(true);
+  });
+
+  it("host muta um participante", async () => {
+    const { result } = renderHook(() => useWebRTC(HOST_OPTS));
+    await waitFor(() => expect(result.current.localStream).not.toBeNull());
+    await act(async () => serverEmit("user-joined", GUEST_PEER));
+
+    act(() => result.current.muteParticipant("guest-1"));
+
+    expect(socketMock.emit).toHaveBeenCalledWith("mute-participant", { peerId: "guest-1" });
+    expect(result.current.participants[0].isMicMuted).toBe(true);
+  });
+
+  it("paciente não emite mute-participant", async () => {
+    const { result } = renderHook(() => useWebRTC(GUEST_OPTS));
+    await waitFor(() => expect(result.current.localStream).not.toBeNull());
+
+    act(() => result.current.muteParticipant("host-1"));
+    expect(socketMock.emit).not.toHaveBeenCalledWith("mute-participant", expect.anything());
+  });
+
+  it("join-room leva o estado atual do microfone", async () => {
+    const { result } = renderHook(() => useWebRTC(HOST_OPTS));
+    await waitFor(() => expect(result.current.localStream).not.toBeNull());
+    act(() => result.current.toggleMic());
+
+    socketMock.emit.mockClear();
+    await act(async () => serverEmit("connect"));
+    expect(socketMock.emit).toHaveBeenCalledWith("join-room", { micMuted: true });
+  });
+});

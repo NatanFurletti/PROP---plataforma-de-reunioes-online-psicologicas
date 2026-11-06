@@ -17,6 +17,7 @@ import {
 // Intervalo do ping que mantém o backend acordado (Render free dorme após
 // ~15 min sem requisições HTTP; o WebSocket sozinho pode não contar)
 const KEEP_ALIVE_MS = 4 * 60 * 1000;
+const NOTICE_DURATION_MS = 6000;
 
 // Mensagens amigáveis para erros conhecidos da sinalização/WebRTC
 function friendlyError(error: Error): string {
@@ -137,6 +138,8 @@ const VideoCallInner: React.FC<VideoCallInnerProps> = ({
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [showConfirmEnd, setShowConfirmEnd] = useState(false);
   const [isChatOpen, setIsChatOpen] = useState(false);
+  // Aviso informativo (ex.: o psicólogo desligou seu microfone)
+  const [notice, setNotice] = useState<string | null>(null);
 
   // Guarda a chave do paciente: voltar pelo link (nova aba, reload) não
   // pede o nome de novo nem, depois de aprovado, nova aprovação
@@ -159,6 +162,10 @@ const VideoCallInner: React.FC<VideoCallInnerProps> = ({
     setErrorMessage(friendlyError(error));
   }, []);
 
+  const handleForceMuted = useCallback(() => {
+    setNotice("O psicólogo desligou seu microfone. Toque em Mic para religar.");
+  }, []);
+
   const handleRoomFull = useCallback(() => {
     setErrorMessage(
       "A sala atingiu o limite de participantes. Tente novamente mais tarde.",
@@ -178,6 +185,7 @@ const VideoCallInner: React.FC<VideoCallInnerProps> = ({
     toggleCamera,
     admitGuest,
     denyGuest,
+    muteParticipant,
     endCall,
   } = useWebRTC({
     sessionId,
@@ -188,8 +196,16 @@ const VideoCallInner: React.FC<VideoCallInnerProps> = ({
     onAdmissionKey: saveAdmissionKey,
     onSessionEnded: handleSessionEnded,
     onRoomFull: handleRoomFull,
+    onForceMuted: handleForceMuted,
     onError: handleError,
   });
+
+  // O aviso some sozinho depois de alguns segundos
+  useEffect(() => {
+    if (!notice) return;
+    const timer = setTimeout(() => setNotice(null), NOTICE_DURATION_MS);
+    return () => clearTimeout(timer);
+  }, [notice]);
 
   useWakeLock(true);
 
@@ -355,6 +371,23 @@ const VideoCallInner: React.FC<VideoCallInnerProps> = ({
         </div>
       )}
 
+      {notice && !errorMessage && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="absolute top-14 left-1/2 -translate-x-1/2 z-30 bg-gray-800 border border-gray-600 text-white px-4 py-2 rounded-lg text-sm max-w-sm text-center"
+        >
+          {notice}
+          <button
+            onClick={() => setNotice(null)}
+            className="ml-3 underline text-xs"
+            aria-label="Fechar aviso"
+          >
+            fechar
+          </button>
+        </div>
+      )}
+
       {/* Pedidos de entrada (somente host) */}
       {role === "host" && waitingGuests.length > 0 && (
         <section
@@ -418,6 +451,10 @@ const VideoCallInner: React.FC<VideoCallInnerProps> = ({
                 status={participantStatus(p)}
                 showVideo={participantStatus(p) === undefined}
                 isMuted={false}
+                isMicMuted={p.isMicMuted}
+                onMuteMic={
+                  role === "host" ? () => muteParticipant(p.peerId) : undefined
+                }
                 videoRef={p.peerId === pipTarget?.peerId ? setPipVideo : undefined}
               />
             ))}
@@ -433,7 +470,12 @@ const VideoCallInner: React.FC<VideoCallInnerProps> = ({
 
         {/* Vídeo local (picture-in-picture) */}
         <div className="absolute bottom-4 right-4 w-40 h-28 rounded-lg overflow-hidden shadow-lg border border-gray-700 z-20">
-          <VideoTile stream={localStream} label={localLabel} isMuted={true} />
+          <VideoTile
+            stream={localStream}
+            label={localLabel}
+            isMuted={true}
+            isMicMuted={isMicMuted}
+          />
         </div>
       </div>
 
