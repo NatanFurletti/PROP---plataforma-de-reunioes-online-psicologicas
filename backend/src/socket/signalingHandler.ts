@@ -29,6 +29,8 @@ interface ParticipantInfo {
   name: string;
   // Guest: chave do paciente (identifica a mesma pessoa entre conexões)
   admissionKey?: string;
+  // Microfone desligado. Todos os participantes veem o ícone de mudo.
+  micMuted: boolean;
   // Remoção agendada após uma queda involuntária (ver RECONNECT_GRACE_MS)
   removalTimer: NodeJS.Timeout | null;
 }
@@ -38,6 +40,8 @@ interface WaitingGuest {
   socketId: string;
   name: string;
   admissionKey: string;
+  // Estado do microfone informado no join-room, usado ao ser admitido
+  micMuted: boolean;
 }
 
 // Paciente conhecido pela sala. A chave é entregue no primeiro pedido de
@@ -342,13 +346,19 @@ export function registerSignalingHandlers(
   // Coloca um socket como participante da chamada e dispara a negociação:
   // quem entra recebe a lista de quem já está (e cria as offers); os demais
   // recebem `user-joined` e aguardam a offer do recém-chegado.
-  function admitToCall(socket: Socket, room: RoomState, auth: SocketAuth): void {
+  function admitToCall(
+    socket: Socket,
+    room: RoomState,
+    auth: SocketAuth,
+    micMuted: boolean,
+  ): void {
     const { sessionId, role, name } = auth;
 
     const peers = [...room.participants.values()].map((p) => ({
       peerId: p.socketId,
       role: p.role,
       name: p.name,
+      micMuted: p.micMuted,
     }));
 
     socket.join(sessionId);
@@ -357,11 +367,14 @@ export function registerSignalingHandlers(
       role,
       name,
       admissionKey: auth.admissionKey,
+      micMuted,
       removalTimer: null,
     });
     room.emptySince = null;
 
-    socket.to(sessionId).emit("user-joined", { peerId: socket.id, role, name });
+    socket
+      .to(sessionId)
+      .emit("user-joined", { peerId: socket.id, role, name, micMuted });
     socket.emit("room-peers", { peers });
   }
 
@@ -381,6 +394,24 @@ export function registerSignalingHandlers(
     return room.participants.size >= MAX_ROOM_PARTICIPANTS;
   }
 
+  // Atualiza o estado do microfone e avisa os demais da sala (só se mudou)
+  function setMicMuted(
+    sessionId: string,
+    participant: ParticipantInfo,
+    muted: boolean,
+  ): void {
+    if (participant.micMuted === muted) return;
+    participant.micMuted = muted;
+    io.to(sessionId)
+      .except(participant.socketId)
+      .emit("peer-mic-state", { peerId: participant.socketId, muted });
+  }
+
+  // join-room pode trazer o estado atual do microfone de quem entra
+  function readMicMuted(payload: unknown): boolean {
+    return (payload as { micMuted?: unknown } | undefined)?.micMuted === true;
+  }
+
   io.on("connection", (socket: Socket) => {
     // ----------------------------------------------------------------
     // join-room: participante entra na sala de sinalização.
@@ -388,10 +419,11 @@ export function registerSignalingHandlers(
     // Host entra direto; guest vai para a lista de espera até o host
     // aprovar (exceto se já foi aprovado antes nesta sala).
     // ----------------------------------------------------------------
-    socket.on("join-room", async () => {
+    socket.on("join-room", async (payload?: unknown) => {
       const auth = getAuth(socket);
       if (!auth) return;
       const { sessionId, role } = auth;
+      const micMuted = readMicMuted(payload);
 
       const room = getOrCreateRoom(sessionId);
 
@@ -401,6 +433,7 @@ export function registerSignalingHandlers(
       if (existing) {
         if (existing.removalTimer) clearTimeout(existing.removalTimer);
         existing.removalTimer = null;
+        setMicMuted(sessionId, existing, micMuted);
         return;
       }
       if (room.waiting.has(socket.id)) return;
@@ -417,7 +450,7 @@ export function registerSignalingHandlers(
         const currentHost = findHost(room);
         if (currentHost) replaceParticipant(sessionId, room, currentHost.socketId);
 
-        admitToCall(socket, room, auth);
+        admitToCall(socket, room, auth, micMuted);
 
         // Marcar a sessão como IN_PROGRESS (idempotente)
         try {
@@ -453,7 +486,7 @@ export function registerSignalingHandlers(
           socket.emit("room-full", { error: "Room is full" });
           return;
         }
-        admitToCall(socket, room, auth);
+        admitToCall(socket, room, auth, micMuted);
         return;
       }
 
@@ -494,6 +527,7 @@ export function registerSignalingHandlers(
         socketId: socket.id,
         name: auth.name,
         admissionKey: auth.admissionKey,
+        micMuted,
       });
       room.emptySince = null;
       socket.emit("waiting-for-approval", { admissionKey: auth.admissionKey });
@@ -545,7 +579,7 @@ export function registerSignalingHandlers(
       if (known) known.admitted = true;
       guestAuth.admissionKey = admissionKey;
       guestSocket.emit("admitted", { admissionKey });
-      admitToCall(guestSocket, room, guestAuth);
+      admitToCall(guestSocket, room, guestAuth, waiting.micMuted);
       emitWaitingList(room);
     });
 
@@ -605,6 +639,36 @@ export function registerSignalingHandlers(
     // restart (ex.: voltou do segundo plano com a conexão P2P caída)
     socket.on("restart-ice", (payload: { to?: unknown }) => {
       relay("restart-ice", {}, payload?.to);
+    });
+
+    // ----------------------------------------------------------------
+    // mic-state: o participante ligou/desligou o próprio microfone.
+    // mute-participant: o host desliga o microfone de outro participante.
+    // Só o próprio participante religa o microfone (não há "desmutar
+    // alguém"): o servidor apenas marca como mudo e avisa o alvo, que
+    // desliga o áudio no próprio navegador.
+    // ----------------------------------------------------------------
+    socket.on("mic-state", (payload: { muted?: unknown }) => {
+      const auth = getAuth(socket);
+      if (!auth) return;
+      const room = rooms.get(auth.sessionId);
+      const participant = room?.participants.get(socket.id);
+      if (!participant || typeof payload?.muted !== "boolean") return;
+      setMicMuted(auth.sessionId, participant, payload.muted);
+    });
+
+    socket.on("mute-participant", (payload: { peerId?: unknown }) => {
+      const auth = getAuth(socket);
+      if (!auth || auth.role !== "host") return;
+      const room = rooms.get(auth.sessionId);
+      if (!room || !room.participants.has(socket.id)) return;
+
+      const peerId = typeof payload?.peerId === "string" ? payload.peerId : "";
+      const target = room.participants.get(peerId);
+      if (!target || target.socketId === socket.id) return;
+
+      io.to(target.socketId).emit("force-muted");
+      setMicMuted(auth.sessionId, target, true);
     });
 
     // ----------------------------------------------------------------
