@@ -11,18 +11,23 @@ interface AuthState {
   isAuthenticated: boolean;
   // bootstrapped indica se a verificação inicial via /auth/me já terminou
   bootstrapped: boolean;
+  // true quando o servidor não respondeu ao /auth/me depois das tentativas
+  bootstrapFailed: boolean;
   login: (psychologist: Psychologist) => void;
   logout: () => void;
   setBootstrapped: (value: boolean) => void;
+  setBootstrapFailed: (value: boolean) => void;
 }
 
 export const useAuthStore = create<AuthState>((set) => ({
   psychologist: null,
   isAuthenticated: false,
   bootstrapped: false,
+  bootstrapFailed: false,
   login: (psychologist) => set({ psychologist, isAuthenticated: true }),
   logout: () => set({ psychologist: null, isAuthenticated: false }),
   setBootstrapped: (value) => set({ bootstrapped: value }),
+  setBootstrapFailed: (value) => set({ bootstrapFailed: value }),
 }));
 
 interface SessionState {
