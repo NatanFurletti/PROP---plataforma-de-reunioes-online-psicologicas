@@ -39,6 +39,8 @@ export const authService = {
   // pendurada; o bootstrap tenta de novo em vez de esperar para sempre
   me: (timeoutMs?: number) => api.get("/auth/me", { timeout: timeoutMs }),
   verifyEmail: (token: string) => api.get(`/auth/verify-email/${token}`),
+  resendVerification: (email: string) =>
+    api.post("/auth/resend-verification", { email }),
   forgotPassword: (email: string) =>
     api.post("/auth/forgot-password", { email }),
   resetPassword: (token: string, password: string) =>
