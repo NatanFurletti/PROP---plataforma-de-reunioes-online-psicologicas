@@ -31,6 +31,9 @@ interface ParticipantInfo {
   admissionKey?: string;
   // Microfone desligado. Todos os participantes veem o ícone de mudo.
   micMuted: boolean;
+  // Paciente com a mão levantada: momento (do servidor) em que levantou,
+  // usado para mostrar quem levantou primeiro. null = mão abaixada.
+  handRaisedAt: number | null;
   // Remoção agendada após uma queda involuntária (ver RECONNECT_GRACE_MS)
   removalTimer: NodeJS.Timeout | null;
 }
@@ -60,6 +63,9 @@ interface RoomState {
   guests: Map<string, KnownGuest>;
   // Momento em que a sala ficou sem ninguém. null enquanto houver alguém.
   emptySince: number | null;
+  // Último carimbo de "mão levantada" — mantém a ordem estrita mesmo com
+  // duas mãos no mesmo milissegundo
+  lastHandStamp: number;
 }
 
 // Uma sala sem ninguém conectado por este tempo é encerrada e a sessão
@@ -149,6 +155,7 @@ function getOrCreateRoom(sessionId: string): RoomState {
       waiting: new Map(),
       guests: new Map(),
       emptySince: null,
+      lastHandStamp: 0,
     };
     rooms.set(sessionId, room);
   }
@@ -351,6 +358,7 @@ export function registerSignalingHandlers(
     room: RoomState,
     auth: SocketAuth,
     micMuted: boolean,
+    handRaisedAt: number | null = null,
   ): void {
     const { sessionId, role, name } = auth;
 
@@ -359,6 +367,7 @@ export function registerSignalingHandlers(
       role: p.role,
       name: p.name,
       micMuted: p.micMuted,
+      handRaisedAt: p.handRaisedAt,
     }));
 
     socket.join(sessionId);
@@ -368,14 +377,20 @@ export function registerSignalingHandlers(
       name,
       admissionKey: auth.admissionKey,
       micMuted,
+      handRaisedAt,
       removalTimer: null,
     });
     room.emptySince = null;
 
     socket
       .to(sessionId)
-      .emit("user-joined", { peerId: socket.id, role, name, micMuted });
+      .emit("user-joined", { peerId: socket.id, role, name, micMuted, handRaisedAt });
     socket.emit("room-peers", { peers });
+    // Voltou com a mão levantada (reconexão): o próprio cliente recebe o
+    // carimbo do servidor para saber sua posição na fila
+    if (handRaisedAt !== null) {
+      socket.emit("hand-state", { peerId: socket.id, raisedAt: handRaisedAt });
+    }
   }
 
   // Envia ao host a lista atual de pacientes aguardando aprovação
@@ -410,6 +425,32 @@ export function registerSignalingHandlers(
   // join-room pode trazer o estado atual do microfone de quem entra
   function readMicMuted(payload: unknown): boolean {
     return (payload as { micMuted?: unknown } | undefined)?.micMuted === true;
+  }
+
+  function readHandRaised(payload: unknown): boolean {
+    return (payload as { handRaised?: unknown } | undefined)?.handRaised === true;
+  }
+
+  // Carimbo de tempo crescente para a fila de mãos levantadas
+  function nextHandStamp(room: RoomState): number {
+    room.lastHandStamp = Math.max(Date.now(), room.lastHandStamp + 1);
+    return room.lastHandStamp;
+  }
+
+  // Levanta/abaixa a mão e avisa todos da sala, inclusive o próprio
+  // participante (que recebe o carimbo do servidor para saber sua posição)
+  function setHandRaised(
+    sessionId: string,
+    room: RoomState,
+    participant: ParticipantInfo,
+    raised: boolean,
+  ): void {
+    if (raised === (participant.handRaisedAt !== null)) return;
+    participant.handRaisedAt = raised ? nextHandStamp(room) : null;
+    io.to(sessionId).emit("hand-state", {
+      peerId: participant.socketId,
+      raisedAt: participant.handRaisedAt,
+    });
   }
 
   io.on("connection", (socket: Socket) => {
@@ -477,8 +518,10 @@ export function registerSignalingHandlers(
       if (auth.admissionKey && known?.admitted) {
         // Mesmo paciente voltando com outro socket: libera a vaga antiga,
         // mesmo que o servidor ainda não tenha notado a queda dela
+        let previousHand: number | null = null;
         for (const p of [...room.participants.values()]) {
           if (p.admissionKey === auth.admissionKey) {
+            previousHand = p.handRaisedAt;
             replaceParticipant(sessionId, room, p.socketId);
           }
         }
@@ -486,7 +529,11 @@ export function registerSignalingHandlers(
           socket.emit("room-full", { error: "Room is full" });
           return;
         }
-        admitToCall(socket, room, auth, micMuted);
+        // Mão levantada antes da queda mantém o lugar na fila
+        const handRaisedAt = readHandRaised(payload)
+          ? (previousHand ?? nextHandStamp(room))
+          : null;
+        admitToCall(socket, room, auth, micMuted, handRaisedAt);
         return;
       }
 
@@ -669,6 +716,32 @@ export function registerSignalingHandlers(
 
       io.to(target.socketId).emit("force-muted");
       setMicMuted(auth.sessionId, target, true);
+    });
+
+    // ----------------------------------------------------------------
+    // raise-hand: o paciente levanta/abaixa a mão para pedir a palavra.
+    // lower-hand: o host abaixa a mão de um paciente (ex.: já respondeu).
+    // A ordem (quem levantou primeiro) vem do carimbo do servidor.
+    // ----------------------------------------------------------------
+    socket.on("raise-hand", (payload: { raised?: unknown }) => {
+      const auth = getAuth(socket);
+      if (!auth || auth.role !== "guest") return;
+      const room = rooms.get(auth.sessionId);
+      const participant = room?.participants.get(socket.id);
+      if (!room || !participant || typeof payload?.raised !== "boolean") return;
+      setHandRaised(auth.sessionId, room, participant, payload.raised);
+    });
+
+    socket.on("lower-hand", (payload: { peerId?: unknown }) => {
+      const auth = getAuth(socket);
+      if (!auth || auth.role !== "host") return;
+      const room = rooms.get(auth.sessionId);
+      if (!room || !room.participants.has(socket.id)) return;
+
+      const peerId = typeof payload?.peerId === "string" ? payload.peerId : "";
+      const target = room.participants.get(peerId);
+      if (!target) return;
+      setHandRaised(auth.sessionId, room, target, false);
     });
 
     // ----------------------------------------------------------------

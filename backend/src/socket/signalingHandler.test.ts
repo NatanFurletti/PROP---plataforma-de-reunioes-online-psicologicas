@@ -423,8 +423,8 @@ describe("signaling — sala de espera e aprovação", () => {
     const { guest, peers, admissionKey } = await joinAndAdmit(host);
 
     expect(admissionKey).toEqual(expect.any(String));
-    expect(peers).toEqual([{ peerId: host.id, role: "host", name: "Psicólogo", micMuted: false }]);
-    expect(await joined).toEqual({ peerId: guest.id, role: "guest", name: "Maria", micMuted: false });
+    expect(peers).toEqual([{ peerId: host.id, role: "host", name: "Psicólogo", micMuted: false, handRaisedAt: null }]);
+    expect(await joined).toEqual({ peerId: guest.id, role: "guest", name: "Maria", micMuted: false, handRaisedAt: null });
   });
 
   it("host recusa: paciente recebe admission-denied e não entra", async () => {
@@ -591,6 +591,7 @@ describe("signaling — vários participantes", () => {
       role: "guest",
       name: "João",
       micMuted: false,
+      handRaisedAt: null,
     });
   });
 
@@ -627,7 +628,7 @@ describe("signaling — vários participantes", () => {
     expect(await replaced).not.toBeNull();
     expect(await left).toEqual({ peerId: firstId });
     expect((await roomPeers)?.peers).toEqual([
-      { peerId: guest.id, role: "guest", name: "Maria", micMuted: false },
+      { peerId: guest.id, role: "guest", name: "Maria", micMuted: false, handRaisedAt: null },
     ]);
   });
 
@@ -726,7 +727,7 @@ describe("signaling — microfone dos participantes", () => {
     const joao = await joinAndAdmit(host, "João");
     expect(joao.peers).toEqual(
       expect.arrayContaining([
-        { peerId: maria.guest.id, role: "guest", name: "Maria", micMuted: true },
+        { peerId: maria.guest.id, role: "guest", name: "Maria", micMuted: true, handRaisedAt: null },
       ]),
     );
     expect(await joined).toMatchObject({ name: "João", micMuted: false });
@@ -741,7 +742,7 @@ describe("signaling — microfone dos participantes", () => {
 
     const { peers: guestPeers } = await joinAndAdmit(host);
     expect(guestPeers).toEqual([
-      { peerId: host.id, role: "host", name: "Psicólogo", micMuted: true },
+      { peerId: host.id, role: "host", name: "Psicólogo", micMuted: true, handRaisedAt: null },
     ]);
   });
 
@@ -794,6 +795,108 @@ describe("signaling — microfone dos participantes", () => {
     guest.emit("mic-state", { muted: "sim" });
     waiting.emit("mic-state", { muted: true });
     expect(await atHost).toBeNull();
+  });
+});
+
+describe("signaling — levantar a mão", () => {
+  it("paciente levanta a mão: todos (inclusive ele) recebem o carimbo", async () => {
+    const host = await connectHost();
+    const maria = await joinAndAdmit(host, "Maria");
+    const joao = await joinAndAdmit(host, "João");
+
+    const atHost = waitFor<{ peerId: string; raisedAt: number | null }>(host, "hand-state");
+    const atJoao = waitFor<{ peerId: string; raisedAt: number | null }>(joao.guest, "hand-state");
+    const atSelf = waitFor<{ peerId: string; raisedAt: number | null }>(maria.guest, "hand-state");
+    maria.guest.emit("raise-hand", { raised: true });
+
+    const state = (await atHost)!;
+    expect(state.peerId).toBe(maria.guest.id);
+    expect(typeof state.raisedAt).toBe("number");
+    expect(await atJoao).toEqual(state);
+    expect(await atSelf).toEqual(state);
+
+    const lowered = waitFor(host, "hand-state");
+    maria.guest.emit("raise-hand", { raised: false });
+    expect(await lowered).toEqual({ peerId: maria.guest.id, raisedAt: null });
+  });
+
+  it("a ordem das mãos segue quem levantou primeiro", async () => {
+    const host = await connectHost();
+    const maria = await joinAndAdmit(host, "Maria");
+    const joao = await joinAndAdmit(host, "João");
+
+    const first = waitFor<{ raisedAt: number }>(host, "hand-state");
+    joao.guest.emit("raise-hand", { raised: true });
+    const joaoAt = (await first)!.raisedAt;
+    const second = waitFor<{ raisedAt: number }>(host, "hand-state");
+    maria.guest.emit("raise-hand", { raised: true });
+    const mariaAt = (await second)!.raisedAt;
+
+    expect(joaoAt).toBeLessThan(mariaAt);
+  });
+
+  it("quem entra recebe as mãos já levantadas", async () => {
+    const host = await connectHost();
+    const maria = await joinAndAdmit(host, "Maria");
+    const raised = waitFor<{ raisedAt: number }>(host, "hand-state");
+    maria.guest.emit("raise-hand", { raised: true });
+    const { raisedAt } = (await raised)!;
+
+    const joao = await joinAndAdmit(host, "João");
+    expect(joao.peers).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ peerId: maria.guest.id, handRaisedAt: raisedAt }),
+      ]),
+    );
+  });
+
+  it("host abaixa a mão de um paciente", async () => {
+    const host = await connectHost();
+    const maria = await joinAndAdmit(host, "Maria");
+    const raised = waitFor(maria.guest, "hand-state");
+    maria.guest.emit("raise-hand", { raised: true });
+    await raised;
+
+    const atSelf = waitFor(maria.guest, "hand-state");
+    host.emit("lower-hand", { peerId: maria.guest.id });
+    expect(await atSelf).toEqual({ peerId: maria.guest.id, raisedAt: null });
+  });
+
+  it("host não levanta a mão e paciente não abaixa a de outro", async () => {
+    const host = await connectHost();
+    const maria = await joinAndAdmit(host, "Maria");
+    const joao = await joinAndAdmit(host, "João");
+    const raised = waitFor(joao.guest, "hand-state");
+    joao.guest.emit("raise-hand", { raised: true });
+    await raised;
+
+    const atJoao = waitFor(joao.guest, "hand-state");
+    host.emit("raise-hand", { raised: true });
+    maria.guest.emit("lower-hand", { peerId: joao.guest.id });
+    maria.guest.emit("raise-hand", { raised: "sim" });
+    expect(await atJoao).toBeNull();
+  });
+
+  it("paciente que volta com a chave mantém a mão e o lugar na fila", async () => {
+    const host = await connectHost();
+    const maria = await joinAndAdmit(host, "Maria");
+    const raised = waitFor<{ raisedAt: number }>(host, "hand-state");
+    maria.guest.emit("raise-hand", { raised: true });
+    const { raisedAt } = (await raised)!;
+
+    const rejoined = makeClient({
+      role: "guest",
+      accessToken: ACCESS_TOKEN,
+      name: "Maria",
+      admissionKey: maria.admissionKey,
+    });
+    await tryConnect(rejoined);
+    const own = waitFor(rejoined, "hand-state");
+    const joined = waitFor(host, "user-joined");
+    rejoined.emit("join-room", { handRaised: true });
+
+    expect(await joined).toMatchObject({ name: "Maria", handRaisedAt: raisedAt });
+    expect(await own).toEqual({ peerId: rejoined.id, raisedAt });
   });
 });
 
@@ -906,7 +1009,7 @@ describe("signaling — quedas involuntárias (app em segundo plano)", () => {
 
     expect(await left).toEqual({ peerId: oldId });
     expect((await roomPeers)?.peers).toEqual([
-      { peerId: host.id, role: "host", name: "Psicólogo", micMuted: false },
+      { peerId: host.id, role: "host", name: "Psicólogo", micMuted: false, handRaisedAt: null },
     ]);
   });
 
@@ -924,7 +1027,7 @@ describe("signaling — quedas involuntárias (app em segundo plano)", () => {
 
     expect(await left).toEqual({ peerId: oldHostId });
     expect((await roomPeers)?.peers).toEqual([
-      { peerId: guest.id, role: "guest", name: "Maria", micMuted: false },
+      { peerId: guest.id, role: "guest", name: "Maria", micMuted: false, handRaisedAt: null },
     ]);
   });
 
