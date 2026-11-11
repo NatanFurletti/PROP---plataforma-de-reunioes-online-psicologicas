@@ -57,6 +57,55 @@ final, e salve. O serviço reinicia sozinho.
 
 O `CLIENT_URL` libera o WebSocket (CORS) e monta os links dos e-mails.
 
+## 4.1 E-mail — Brevo ou Resend
+
+O login exige e-mail confirmado. Sem envio de e-mail, ninguém consegue
+confirmar a conta nem redefinir a senha.
+
+O envio usa a API HTTP do serviço. SMTP não funciona: o plano grátis do Render
+bloqueia as portas 25, 465 e 587.
+
+### Sem domínio próprio — Brevo
+
+O Brevo aceita como remetente um endereço comum (ex.: `@gmail.com`),
+confirmado por um link. O plano grátis envia até 300 e-mails por dia.
+
+1. Crie uma conta em https://www.brevo.com.
+2. **Senders, Domains & Dedicated IPs → Senders → Add a sender**: informe o
+   nome (Palas) e o e-mail (ex.: `psipalascall@gmail.com`) e clique no link de
+   confirmação que chega nessa caixa.
+3. **SMTP & API → API Keys → Generate a new API key**.
+4. No Render, em **Environment**:
+   - `EMAIL_DRIVER=brevo`
+   - `BREVO_API_KEY=` a chave do passo 3
+   - `EMAIL_FROM=Palas <psipalascall@gmail.com>` (o remetente do passo 2)
+
+Remetente `@gmail.com` saindo pelo Brevo tem mais chance de cair no spam. Com
+domínio próprio, prefira o Resend.
+
+### Com domínio próprio — Resend
+
+1. Crie uma conta em https://resend.com.
+2. **Domains → Add Domain**: cadastre o domínio do remetente e crie no DNS os
+   registros que o Resend mostrar (SPF/DKIM). Espere o status ficar **Verified**.
+3. **API Keys → Create API Key** com permissão *Sending access*.
+4. No Render, em **Environment**:
+   - `EMAIL_DRIVER=resend`
+   - `RESEND_API_KEY=` a chave do passo 3
+   - `EMAIL_FROM=Palas <nao-responda@seudominio.com.br>` (do domínio verificado)
+
+Com `EMAIL_DRIVER=resend` ou `brevo` e a chave ou o remetente faltando, o backend nem
+sobe; o erro aparece no log do deploy. Sem domínio próprio, o Resend só deixa
+enviar para o e-mail da sua conta (bom para testar a homologação).
+
+**Contas criadas antes desta exigência** nunca receberam o link. Elas podem
+usar **Reenviar link** na tela de login. Para liberar todas de uma vez, rode no
+SQL Editor do Neon:
+
+```sql
+UPDATE "Psychologist" SET "emailVerifiedAt" = NOW() WHERE "emailVerifiedAt" IS NULL;
+```
+
 ## 5. Testar
 
 1. Abra a URL da Vercel e crie uma conta.
@@ -73,8 +122,8 @@ O `CLIENT_URL` libera o WebSocket (CORS) e monta os links dos e-mails.
   operadoras, redes corporativas) podem não conectar. Para resolver, configure um
   TURN (ex.: plano free da Metered) e preencha `VITE_TURN_*`. `VITE_TURN_URL`
   aceita várias URLs separadas por vírgula; inclua as de TCP/TLS na porta 443.
-- **E-mails não são enviados:** os links de verificação e de redefinição de senha
-  aparecem nos **logs do Render**. Falta implementar um `EmailDriver` (SMTP/Resend).
+- **E-mail:** sem `EMAIL_DRIVER=brevo` ou `resend` (passo 4.1), os links de verificação e de
+  redefinição aparecem só nos **logs do Render** e ninguém consegue confirmar a conta.
 - **Salas em memória:** um restart do backend (deploy novo, sono) derruba as
   chamadas em andamento.
 
@@ -118,7 +167,8 @@ homologação quando o host é a URL da branch. Os mesmos arquivos vão para a
    - **Plan:** Free
    - **Environment:** `NODE_ENV=production`, `DATABASE_URL` (do passo 1),
      `JWT_SECRET` (um valor novo, diferente da produção), `JWT_EXPIRES_IN=8h`,
-     `TRUST_PROXY=2`, `MAX_ROOM_PARTICIPANTS=6` e `CLIENT_URL` (passo 4).
+     `TRUST_PROXY=2`, `MAX_ROOM_PARTICIPANTS=6`, `CLIENT_URL` (passo 4) e as
+     variáveis de e-mail do passo 4.1 (`EMAIL_DRIVER`, `BREVO_API_KEY` ou `RESEND_API_KEY`, `EMAIL_FROM`).
 
    > Se a URL não sair `palas-api-homolog.onrender.com`, troque-a em
    > [frontend/.env.homolog](frontend/.env.homolog) e no primeiro rewrite de

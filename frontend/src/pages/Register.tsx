@@ -1,6 +1,7 @@
 import React, { useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link } from "react-router-dom";
 import { authService } from "../services/api";
+import { ResendVerification } from "../components/ResendVerification";
 
 interface FormData {
   name: string;
@@ -16,7 +17,6 @@ interface FormErrors {
 }
 
 export const Register: React.FC = () => {
-  const navigate = useNavigate();
   const [formData, setFormData] = useState<FormData>({
     name: "",
     email: "",
@@ -26,6 +26,8 @@ export const Register: React.FC = () => {
   const [errors, setErrors] = useState<FormErrors>({});
   const [serverError, setServerError] = useState("");
   const [loading, setLoading] = useState(false);
+  // Preenchido após o cadastro: a conta só entra depois de confirmar o e-mail
+  const [registeredEmail, setRegisteredEmail] = useState<string | null>(null);
 
   const validate = (): boolean => {
     const newErrors: FormErrors = {};
@@ -61,7 +63,7 @@ export const Register: React.FC = () => {
         password: formData.password,
         crp: formData.crp || undefined,
       });
-      navigate("/login");
+      setRegisteredEmail(formData.email);
     } catch (err: unknown) {
       const axiosErr = err as { response?: { status: number; data?: { error?: string } } };
       if (axiosErr.response?.status === 409) {
@@ -83,6 +85,30 @@ export const Register: React.FC = () => {
       setErrors({ ...errors, [field]: undefined });
     }
   };
+
+  if (registeredEmail) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-r from-blue-600 to-blue-800">
+        <div className="bg-white rounded-lg shadow-lg p-8 w-full max-w-md text-center">
+          <h1 className="text-2xl font-bold mb-4">Palas</h1>
+          <p className="text-green-700 font-semibold mb-2" role="status">
+            Conta criada! Confirme seu e-mail.
+          </p>
+          <p className="text-sm text-gray-600 mb-6">
+            Enviamos um link de confirmação para{" "}
+            <strong className="break-all">{registeredEmail}</strong>. Abra o
+            link para ativar a conta. Ele vale por 24 horas.
+          </p>
+          <ResendVerification initialEmail={registeredEmail} />
+          <p className="text-sm text-gray-600 mt-6">
+            <Link to="/login" className="text-blue-600 hover:underline">
+              Ir para o login
+            </Link>
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-r from-blue-600 to-blue-800">

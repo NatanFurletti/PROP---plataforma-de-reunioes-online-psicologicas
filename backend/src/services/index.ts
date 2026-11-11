@@ -39,6 +39,10 @@ export const rescheduleSessionSchema = z.object({
   durationMinutes: z.number().int().min(15).max(480).optional(),
 });
 
+export const resendVerificationSchema = z.object({
+  email: z.string().email(),
+});
+
 export const forgotPasswordSchema = z.object({
   email: z.string().email(),
 });
@@ -112,6 +116,36 @@ export class AuthService {
     return { verified: true };
   }
 
+  // Reenvia o link de verificação. Mesma resposta exista ou não a conta (ou
+  // já esteja verificada), para não revelar quais e-mails estão cadastrados.
+  static async resendVerificationEmail(email: string) {
+    const psychologist = await prisma.psychologist.findUnique({
+      where: { email },
+    });
+
+    if (psychologist && !psychologist.emailVerifiedAt) {
+      try {
+        // Só o link mais recente deve valer
+        await TokenService.invalidatePending(
+          psychologist.id,
+          "EMAIL_VERIFICATION",
+        );
+        const token = await TokenService.issue(
+          psychologist.id,
+          "EMAIL_VERIFICATION",
+        );
+        await EmailService.sendVerificationEmail(psychologist.email, token);
+      } catch (err) {
+        logger.error(
+          { err, psychologistId: psychologist.id },
+          "[auth] Failed to resend verification email",
+        );
+      }
+    }
+
+    return { message: "If the account needs verification, an email has been sent" };
+  }
+
   // Inicia a recuperação de senha. Resposta é sempre a mesma, exista ou
   // não a conta — caso contrário o endpoint vira um oráculo de e-mails.
   static async requestPasswordReset(email: string) {
@@ -174,6 +208,12 @@ export class AuthService {
 
     if (!passwordMatch) {
       throw new AppError("Invalid credentials", 401);
+    }
+
+    // Conferido só depois da senha: sem ela, ninguém descobre por aqui se o
+    // e-mail está cadastrado.
+    if (!psychologist.emailVerifiedAt) {
+      throw new AppError("Email not verified", 403, "EMAIL_NOT_VERIFIED");
     }
 
     const token = jwt.sign(

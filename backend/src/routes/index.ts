@@ -27,6 +27,11 @@ const joinLimiter = rateLimit({
 router.post("/auth/register", authLimiter, controllers.registerPsychologist);
 router.post("/auth/login", authLimiter, controllers.loginPsychologist);
 router.get("/auth/verify-email/:token", joinLimiter, controllers.verifyEmail);
+router.post(
+  "/auth/resend-verification",
+  authLimiter,
+  controllers.resendVerification,
+);
 router.post("/auth/forgot-password", authLimiter, controllers.forgotPassword);
 router.post("/auth/reset-password", authLimiter, controllers.resetPassword);
 router.get(

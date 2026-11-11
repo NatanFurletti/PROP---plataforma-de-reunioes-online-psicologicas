@@ -27,6 +27,9 @@ export interface RemoteParticipant {
   isVideoFlowing: boolean;
   // Microfone desligado (pelo próprio participante ou pelo psicólogo)
   isMicMuted: boolean;
+  // Paciente com a mão levantada: carimbo do servidor (ordem de quem
+  // levantou primeiro). null = mão abaixada.
+  handRaisedAt: number | null;
 }
 
 interface PeerInfo {
@@ -34,6 +37,7 @@ interface PeerInfo {
   role: Role;
   name: string;
   micMuted?: boolean;
+  handRaisedAt?: number | null;
 }
 
 export interface WaitingGuest {
@@ -68,6 +72,11 @@ interface UseWebRTCReturn {
   admissionStatus: AdmissionStatus;
   isMicMuted: boolean;
   isCameraOff: boolean;
+  // Paciente: mão levantada (atualiza na hora do clique)
+  isHandRaised: boolean;
+  // Carimbo do servidor da própria mão, para saber a posição na fila.
+  // null enquanto o servidor não confirmar ou com a mão abaixada.
+  handRaisedAt: number | null;
   connectionState: ConnectionState;
   // Socket da chamada, para recursos que usam a mesma conexão (ex.: chat).
   // null antes de conectar e depois de encerrar.
@@ -78,6 +87,10 @@ interface UseWebRTCReturn {
   denyGuest: (guestId: string) => void;
   // Host: desliga o microfone de outro participante (só ele religa)
   muteParticipant: (peerId: string) => void;
+  // Paciente: levanta/abaixa a própria mão
+  toggleHand: () => void;
+  // Host: abaixa a mão de um paciente
+  lowerHand: (peerId: string) => void;
   endCall: () => void;
 }
 
@@ -180,6 +193,10 @@ export const useWebRTC = ({
   // Valor atual para handlers do socket (join-room, room-peers)
   const micMutedRef = useRef(false);
   const [isCameraOff, setIsCameraOff] = useState(false);
+  const [isHandRaised, setIsHandRaised] = useState(false);
+  const [handRaisedAt, setHandRaisedAt] = useState<number | null>(null);
+  // Valor atual para handlers do socket (join-room, room-peers)
+  const handRaisedRef = useRef(false);
   // Estado da mídia local; o estado da chamada é derivado dos participantes
   const [mediaState, setMediaState] = useState<"idle" | "ready" | "failed">(
     "idle",
@@ -252,6 +269,7 @@ export const useWebRTC = ({
               connectionState: "connecting",
               isVideoFlowing: false,
               isMicMuted: false,
+              handRaisedAt: null,
               ...patch,
             },
           ];
@@ -432,6 +450,9 @@ export const useWebRTC = ({
     setParticipants([]);
     setWaitingGuests([]);
     setMediaState("idle");
+    handRaisedRef.current = false;
+    setIsHandRaised(false);
+    setHandRaisedAt(null);
   }, [role]);
 
   // Reanima conexões P2P que caíram (ex.: o celular ficou em segundo
@@ -609,12 +630,18 @@ export const useWebRTC = ({
       setSocket(socket);
       let hasConnected = false;
 
+      // Estado atual do microfone e da mão, para manter após reconexões
+      const joinPayload = () => ({
+        micMuted: micMutedRef.current,
+        handRaised: handRaisedRef.current,
+      });
+
       const joinRoom = () => {
         if (hasConnected && socket.recovered) {
           // Socket recuperado (mesmo id, ex.: voltou do segundo plano): as
           // conexões P2P continuam valendo. O join só confirma a volta ao
           // servidor; depois tenta reanimar as conexões que caíram.
-          socket.emit("join-room", { micMuted: micMutedRef.current });
+          socket.emit("join-room", joinPayload());
           recoverPeers();
           return;
         }
@@ -625,7 +652,7 @@ export const useWebRTC = ({
           if (role === "guest") setAdmissionStatus("pending");
         }
         hasConnected = true;
-        socket.emit("join-room", { micMuted: micMutedRef.current });
+        socket.emit("join-room", joinPayload());
       };
 
       socket.on("connect", () => {
@@ -698,6 +725,7 @@ export const useWebRTC = ({
           // Garante que os demais vejam o estado atual do microfone (pode ter
           // mudado enquanto aguardava a aprovação)
           socket.emit("mic-state", { muted: micMutedRef.current });
+          if (handRaisedRef.current) socket.emit("raise-hand", { raised: true });
           // room-peers é a foto completa da sala na entrada: conexões que
           // sobraram de antes (ex.: tolerância expirou) não valem mais
           closeAllPeers();
@@ -707,6 +735,7 @@ export const useWebRTC = ({
               name: peer.name,
               connectionState: "connecting",
               isMicMuted: peer.micMuted === true,
+              handRaisedAt: peer.handRaisedAt ?? null,
             });
             createPeer(peer.peerId, true);
             void sendOffer(peer.peerId);
@@ -717,13 +746,14 @@ export const useWebRTC = ({
       // Os demais só registram quem chegou e aguardam a offer
       socket.on(
         "user-joined",
-        ({ peerId, role: peerRole, name: peerName, micMuted }: PeerInfo) => {
+        ({ peerId, role: peerRole, name: peerName, micMuted, handRaisedAt: raisedAt }: PeerInfo) => {
           if (cancelled) return;
           upsertParticipant(peerId, {
             role: peerRole,
             name: peerName,
             connectionState: "connecting",
             isMicMuted: micMuted === true,
+            handRaisedAt: raisedAt ?? null,
           });
         },
       );
@@ -736,6 +766,26 @@ export const useWebRTC = ({
           // Só atualiza quem já está na lista (evita criar um par fantasma)
           setParticipants((prev) =>
             prev.map((p) => (p.peerId === peerId ? { ...p, isMicMuted: muted } : p)),
+          );
+        },
+      );
+
+      // --- Mão levantada ---
+      // Vai para todos da sala, inclusive quem levantou (o carimbo do
+      // servidor define a posição na fila)
+      socket.on(
+        "hand-state",
+        ({ peerId, raisedAt }: { peerId: string; raisedAt: number | null }) => {
+          if (cancelled) return;
+          if (peerId === socket.id) {
+            // Inclui o psicólogo abaixando a mão deste paciente
+            handRaisedRef.current = raisedAt !== null;
+            setIsHandRaised(raisedAt !== null);
+            setHandRaisedAt(raisedAt);
+            return;
+          }
+          setParticipants((prev) =>
+            prev.map((p) => (p.peerId === peerId ? { ...p, handRaisedAt: raisedAt } : p)),
           );
         },
       );
@@ -869,6 +919,28 @@ export const useWebRTC = ({
     [role],
   );
 
+  const toggleHand = useCallback(() => {
+    if (role !== "guest") return;
+    const raised = !handRaisedRef.current;
+    handRaisedRef.current = raised;
+    setIsHandRaised(raised);
+    // A posição na fila só vale com o carimbo do servidor (hand-state)
+    if (!raised) setHandRaisedAt(null);
+    socketRef.current?.emit("raise-hand", { raised });
+  }, [role]);
+
+  const lowerHand = useCallback(
+    (peerId: string) => {
+      if (role !== "host") return;
+      socketRef.current?.emit("lower-hand", { peerId });
+      // Mostra na hora; o servidor confirma via hand-state
+      setParticipants((prev) =>
+        prev.map((p) => (p.peerId === peerId ? { ...p, handRaisedAt: null } : p)),
+      );
+    },
+    [role],
+  );
+
   const toggleMic = useCallback(() => {
     const audioTrack = localStreamRef.current?.getAudioTracks()[0];
     if (audioTrack) applyMicMuted(audioTrack.enabled);
@@ -983,6 +1055,8 @@ export const useWebRTC = ({
     admissionStatus,
     isMicMuted,
     isCameraOff,
+    isHandRaised,
+    handRaisedAt,
     connectionState,
     socket,
     toggleMic,
@@ -990,6 +1064,8 @@ export const useWebRTC = ({
     admitGuest,
     denyGuest,
     muteParticipant,
+    toggleHand,
+    lowerHand,
     endCall,
   };
 };

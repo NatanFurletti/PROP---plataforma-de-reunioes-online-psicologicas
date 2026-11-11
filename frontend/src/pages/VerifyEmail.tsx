@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import { authService } from "../services/api";
+import { ResendVerification } from "../components/ResendVerification";
 
 type State = "loading" | "success" | "error";
 
@@ -49,11 +50,15 @@ export const VerifyEmail: React.FC = () => {
               Link inválido ou expirado.
             </p>
             <p className="text-sm text-gray-600 mb-4">
-              Solicite um novo link de confirmação ao entrar na sua conta.
+              O link pode já ter sido usado ou ter passado de 24 horas. Se sua
+              conta já foi confirmada, basta entrar.
             </p>
-            <Link to="/login" className="text-blue-600 hover:underline">
-              Voltar ao login
-            </Link>
+            <ResendVerification />
+            <p className="mt-4">
+              <Link to="/login" className="text-blue-600 hover:underline">
+                Voltar ao login
+              </Link>
+            </p>
           </>
         )}
       </div>

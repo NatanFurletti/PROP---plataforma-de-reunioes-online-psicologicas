@@ -85,6 +85,7 @@ palas/
 - **Controles de sessão:** mutar microfone, ativar/desativar câmera, encerrar chamada
 - **Mutar participantes:** o psicólogo desliga o microfone de qualquer participante; só a própria pessoa religa
 - **Ícone de mudo:** quem está com o microfone desligado aparece com o ícone vermelho para todos
+- **Levantar a mão:** o paciente pede a palavra pelo botão ✋ (só ícone, legenda ao passar o mouse); todos veem a mão no vídeo dele. Com mais de uma mão levantada, um número discreto (1º, 2º...) mostra quem levantou primeiro. O psicólogo pode abaixar a mão de alguém
 - **Indicadores visuais:** status de conexão, nível de áudio, câmera ativa
 - **Sala de espera com aprovação:** o paciente informa o nome e aguarda; o psicólogo vê o pedido e admite ou recusa cada entrada
 - **Vários participantes:** até `MAX_ROOM_PARTICIPANTS` pessoas por sala (padrão 6, psicólogo incluso)
@@ -98,7 +99,7 @@ palas/
 
 ### Módulo de Autenticação
 - Cadastro e login exclusivo para psicólogos
-- Verificação de e-mail obrigatória
+- Verificação de e-mail obrigatória: login sem e-mail confirmado responde `403` com `code: "EMAIL_NOT_VERIFIED"` (conferido depois da senha); o frontend oferece reenviar o link
 - Recuperação de senha via e-mail
 
 ### Módulo de Gestão do Psicólogo (Dashboard)
@@ -205,6 +206,17 @@ Paciente (novo)            Servidor (Signaling)         Psicólogo (Host)
 - Só o host emite `mute-participant` (servidor revalida o role). O alvo
   recebe `force-muted`, desliga o próprio track de áudio e fica mudo até
   religar manualmente — não existe "desmutar outra pessoa".
+
+**Mão levantada (`raise-hand` / `lower-hand` / `hand-state`):**
+- Só pacientes levantam a mão; só o host abaixa a mão de outro (servidor
+  revalida o role).
+- O servidor guarda `handRaisedAt` (carimbo crescente do servidor) de cada
+  participante — é ele que define a ordem, não o relógio do cliente. Vai em
+  `room-peers` e `user-joined`.
+- Cada mudança vira `hand-state` para **todos** da sala, inclusive quem
+  levantou (recebe o próprio carimbo para saber a posição na fila).
+- `join-room` aceita `{ handRaised }`: o paciente que volta com a mesma
+  `admissionKey` mantém o lugar na fila.
 
 **Chat da chamada (`chat-message`):**
 - Passa pelo mesmo socket da sinalização. Só participantes **admitidos**
@@ -348,6 +360,7 @@ enum SessionStatus {
 | `GET`  | `/auth/me` | Retorna o psicólogo autenticado | ✅ |
 | `POST` | `/auth/logout` | Logout (incrementa tokenVersion) | ✅ |
 | `GET` | `/auth/verify-email/:token` | Confirma e-mail via link | ❌ |
+| `POST` | `/auth/resend-verification` | Reenvia o link de confirmação de e-mail | ❌ |
 | `POST` | `/auth/forgot-password` | Solicita link de redefinição | ❌ |
 | `POST` | `/auth/reset-password` | Redefine a senha com o token | ❌ |
 | `GET` | `/sessions` | Listar sessões do psicólogo | ✅ |
@@ -361,14 +374,18 @@ enum SessionStatus {
 **Tokens de e-mail (`VerificationToken`):** apenas o hash SHA-256 é
 persistido — o valor em claro só existe no link enviado. Uso único
 (`usedAt`), com expiração de 24h para verificação e 1h para redefinição
-de senha. `forgot-password` responde igual exista ou não a conta, para não
-virar um oráculo de e-mails cadastrados. Redefinir a senha incrementa
+de senha. `forgot-password` e `resend-verification` respondem igual exista
+ou não a conta, para não virar um oráculo de e-mails cadastrados; o reenvio
+invalida os links de verificação anteriores. Redefinir a senha incrementa
 `tokenVersion`, revogando as sessões ativas.
 
-> Envio de e-mail passa por `EmailService` (`services/email.ts`). Em
-> desenvolvimento o driver padrão apenas registra o link no log; para
-> produção, implementar `EmailDriver` com SMTP/Resend/SES e injetar via
-> `setEmailDriver`.
+> Envio de e-mail passa por `EmailService` (`services/email.ts`), com o
+> driver escolhido por `EMAIL_DRIVER`: `console` (padrão, só registra o link
+> no log), `resend` (API HTTP do Resend, exige `RESEND_API_KEY`, `EMAIL_FROM`
+> e domínio próprio) ou `brevo` (API HTTP do Brevo, exige `BREVO_API_KEY` e
+> `EMAIL_FROM`; aceita remetente `@gmail.com` verificado). Sempre por HTTPS:
+> o plano grátis do Render bloqueia SMTP. Nos testes,
+> `setEmailDriver(new InMemoryEmailDriver())`.
 
 ---
 
@@ -376,7 +393,7 @@ virar um oráculo de e-mails cadastrados. Redefinir a senha incrementa
 
 | Evento | Direção | Payload | Descrição |
 |---|---|---|---|
-| `join-room` | Cliente → Servidor | `{ micMuted? }` | Entrar na sala (host direto; guest vai para a espera) |
+| `join-room` | Cliente → Servidor | `{ micMuted?, handRaised? }` | Entrar na sala (host direto; guest vai para a espera) |
 | `admit-guest` / `deny-guest` | Host → Servidor | `{ guestId }` | Aprovar ou recusar um paciente |
 | `offer` | Cliente → Servidor | `{ to, offer }` | Enviar SDP offer a um par |
 | `answer` | Cliente → Servidor | `{ to, answer }` | Enviar SDP answer a um par |
@@ -388,8 +405,8 @@ virar um oráculo de e-mails cadastrados. Redefinir a senha incrementa
 | `guest-waiting` | Servidor → Host | `{ guestId, name }` | Novo pedido de entrada |
 | `waiting-list` | Servidor → Host | `{ guests: [{ guestId, name }] }` | Lista atual de pedidos |
 | `admission-error` | Servidor → Host | `{ guestId, error }` | Não foi possível admitir (sala cheia) |
-| `room-peers` | Servidor → Cliente | `{ peers: [{ peerId, role, name, micMuted }] }` | Quem já está na chamada (o recém-chegado cria as offers) |
-| `user-joined` | Servidor → Cliente | `{ peerId, role, name, micMuted }` | Alguém entrou na chamada |
+| `room-peers` | Servidor → Cliente | `{ peers: [{ peerId, role, name, micMuted, handRaisedAt }] }` | Quem já está na chamada (o recém-chegado cria as offers) |
+| `user-joined` | Servidor → Cliente | `{ peerId, role, name, micMuted, handRaisedAt }` | Alguém entrou na chamada |
 | `user-left` | Servidor → Cliente | `{ peerId }` | Alguém saiu da chamada |
 | `offer` / `answer` / `ice-candidate` | Servidor → Cliente | `{ from, ... }` | Sinalização vinda de um par |
 | `room-full` | Servidor → Cliente | `{ error }` | Sala cheia ou host duplicado |
@@ -399,6 +416,9 @@ virar um oráculo de e-mails cadastrados. Redefinir a senha incrementa
 | `mute-participant` | Host → Servidor | `{ peerId }` | Desligar o microfone de um participante |
 | `peer-mic-state` | Servidor → Cliente | `{ peerId, muted }` | Mudança no microfone de outro participante |
 | `force-muted` | Servidor → Cliente | `{}` | O psicólogo desligou seu microfone |
+| `raise-hand` | Guest → Servidor | `{ raised }` | Levantar/abaixar a própria mão |
+| `lower-hand` | Host → Servidor | `{ peerId }` | Abaixar a mão de um paciente |
+| `hand-state` | Servidor → Todos | `{ peerId, raisedAt \| null }` | Mão levantada (carimbo define a ordem) ou abaixada |
 | `chat-message` | Cliente → Servidor | `{ text?, file?: { name, data } }` + ack | Mensagem do chat (texto e/ou arquivo binário) |
 | `chat-message` | Servidor → Cliente | `{ id, from, senderName, senderRole, sentAt, text?, file?: { name, type, size, data } }` | Mensagem de outro participante |
 
@@ -437,6 +457,12 @@ JWT_EXPIRES_IN=8h
 PORT=3333
 CLIENT_URL=http://localhost:5173
 MAX_ROOM_PARTICIPANTS=6   # psicólogo incluso
+
+# E-mail (console | resend | brevo)
+EMAIL_DRIVER=console
+RESEND_API_KEY=re_xxxxxxxx
+BREVO_API_KEY=xkeysib-xxxxxxxx
+EMAIL_FROM=Palas <nao-responda@seudominio.com.br>
 
 # WebRTC / TURN
 TURN_URL=turn:seu-servidor-turn:3478

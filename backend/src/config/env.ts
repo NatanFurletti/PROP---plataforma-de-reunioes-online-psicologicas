@@ -10,6 +10,18 @@ function required(name: string): string {
   return value;
 }
 
+// Envio de e-mail. "console" só registra o link no log (desenvolvimento);
+// "resend" e "brevo" enviam de verdade pela API HTTP do serviço e exigem
+// chave e remetente.
+const EMAIL_DRIVERS = ["console", "resend", "brevo"] as const;
+type EmailDriverName = (typeof EMAIL_DRIVERS)[number];
+const EMAIL_DRIVER = (process.env.EMAIL_DRIVER?.trim() || "console").toLowerCase();
+if (!(EMAIL_DRIVERS as readonly string[]).includes(EMAIL_DRIVER)) {
+  throw new Error(
+    `Invalid EMAIL_DRIVER: ${EMAIL_DRIVER} (use "console", "resend" or "brevo")`,
+  );
+}
+
 export const env = {
   NODE_ENV: process.env.NODE_ENV ?? "development",
   PORT: Number(process.env.PORT ?? 3333),
@@ -31,4 +43,10 @@ export const env = {
     100,
     Number(process.env.RECONNECT_GRACE_MS ?? 120_000) || 120_000,
   ),
+  EMAIL_DRIVER: EMAIL_DRIVER as EmailDriverName,
+  RESEND_API_KEY: EMAIL_DRIVER === "resend" ? required("RESEND_API_KEY") : "",
+  BREVO_API_KEY: EMAIL_DRIVER === "brevo" ? required("BREVO_API_KEY") : "",
+  // Ex.: "Palas <nao-responda@seudominio.com.br>". No Resend o domínio precisa
+  // estar verificado; no Brevo basta o endereço estar verificado como remetente.
+  EMAIL_FROM: EMAIL_DRIVER !== "console" ? required("EMAIL_FROM") : "",
 };

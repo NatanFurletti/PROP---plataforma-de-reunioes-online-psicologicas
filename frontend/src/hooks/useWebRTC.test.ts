@@ -878,6 +878,77 @@ describe("useWebRTC — microfone dos participantes", () => {
 
     socketMock.emit.mockClear();
     await act(async () => serverEmit("connect"));
-    expect(socketMock.emit).toHaveBeenCalledWith("join-room", { micMuted: true });
+    expect(socketMock.emit).toHaveBeenCalledWith("join-room", { micMuted: true, handRaised: false });
+  });
+});
+
+describe("useWebRTC — levantar a mão", () => {
+  it("toggleHand avisa o servidor e a posição vem do carimbo dele", async () => {
+    const { result } = renderHook(() => useWebRTC(GUEST_OPTS));
+    await waitFor(() => expect(result.current.localStream).not.toBeNull());
+
+    act(() => result.current.toggleHand());
+    expect(socketMock.emit).toHaveBeenCalledWith("raise-hand", { raised: true });
+    expect(result.current.isHandRaised).toBe(true);
+    expect(result.current.handRaisedAt).toBeNull();
+
+    await act(async () => serverEmit("hand-state", { peerId: "socket-test", raisedAt: 100 }));
+    expect(result.current.handRaisedAt).toBe(100);
+
+    act(() => result.current.toggleHand());
+    expect(socketMock.emit).toHaveBeenCalledWith("raise-hand", { raised: false });
+    expect(result.current.isHandRaised).toBe(false);
+    expect(result.current.handRaisedAt).toBeNull();
+  });
+
+  it("mostra a mão de quem já estava, de quem entra e as mudanças", async () => {
+    const { result } = renderHook(() => useWebRTC(HOST_OPTS));
+    await waitFor(() => expect(result.current.localStream).not.toBeNull());
+
+    await act(async () => serverEmit("user-joined", { ...GUEST_PEER, handRaisedAt: 50 }));
+    await act(async () =>
+      serverEmit("user-joined", { peerId: "guest-2", role: "guest", name: "João" }),
+    );
+    const byId = (id: string) => result.current.participants.find((p) => p.peerId === id);
+    expect(byId("guest-1")?.handRaisedAt).toBe(50);
+    expect(byId("guest-2")?.handRaisedAt).toBeNull();
+
+    await act(async () => serverEmit("hand-state", { peerId: "guest-2", raisedAt: 60 }));
+    expect(byId("guest-2")?.handRaisedAt).toBe(60);
+  });
+
+  it("host abaixa a mão de um paciente", async () => {
+    const { result } = renderHook(() => useWebRTC(HOST_OPTS));
+    await waitFor(() => expect(result.current.localStream).not.toBeNull());
+    await act(async () => serverEmit("user-joined", { ...GUEST_PEER, handRaisedAt: 50 }));
+
+    act(() => result.current.lowerHand("guest-1"));
+    expect(socketMock.emit).toHaveBeenCalledWith("lower-hand", { peerId: "guest-1" });
+    expect(result.current.participants[0].handRaisedAt).toBeNull();
+  });
+
+  it("psicólogo abaixando a mão do paciente desmarca o botão dele", async () => {
+    const { result } = renderHook(() => useWebRTC(GUEST_OPTS));
+    await waitFor(() => expect(result.current.localStream).not.toBeNull());
+    act(() => result.current.toggleHand());
+    await act(async () => serverEmit("hand-state", { peerId: "socket-test", raisedAt: 100 }));
+
+    await act(async () => serverEmit("hand-state", { peerId: "socket-test", raisedAt: null }));
+    expect(result.current.isHandRaised).toBe(false);
+  });
+
+  it("host não levanta a mão e join-room leva a mão levantada", async () => {
+    const host = renderHook(() => useWebRTC(HOST_OPTS));
+    await waitFor(() => expect(host.result.current.localStream).not.toBeNull());
+    act(() => host.result.current.toggleHand());
+    expect(socketMock.emit).not.toHaveBeenCalledWith("raise-hand", expect.anything());
+    host.unmount();
+
+    const { result } = renderHook(() => useWebRTC(GUEST_OPTS));
+    await waitFor(() => expect(result.current.localStream).not.toBeNull());
+    act(() => result.current.toggleHand());
+    socketMock.emit.mockClear();
+    await act(async () => serverEmit("connect"));
+    expect(socketMock.emit).toHaveBeenCalledWith("join-room", { micMuted: false, handRaised: true });
   });
 });

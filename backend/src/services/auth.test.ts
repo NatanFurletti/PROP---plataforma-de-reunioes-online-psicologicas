@@ -38,6 +38,7 @@ describe("AuthService.verifyToken / verifyTokenWithVersion", () => {
       id: "user-1",
       email: "a@b.c",
       passwordHash: "hash",
+      emailVerifiedAt: new Date(),
       tokenVersion: 0,
       name: "x",
     });
@@ -45,6 +46,7 @@ describe("AuthService.verifyToken / verifyTokenWithVersion", () => {
       id: "user-1",
       email: "a@b.c",
       passwordHash: await (await import("bcryptjs")).default.hash("12345678", 4),
+      emailVerifiedAt: new Date(),
       tokenVersion: 0,
       name: "x",
     });
@@ -69,6 +71,7 @@ describe("AuthService.verifyToken / verifyTokenWithVersion", () => {
       id: "user-1",
       email: "a@b.c",
       passwordHash: hash,
+      emailVerifiedAt: new Date(),
       tokenVersion: 0,
       name: "x",
     });
@@ -97,6 +100,7 @@ describe("AuthService.verifyToken / verifyTokenWithVersion", () => {
       id: "user-1",
       email: "a@b.c",
       passwordHash: hash,
+      emailVerifiedAt: new Date(),
       tokenVersion: 7,
       name: "x",
     });
@@ -144,11 +148,36 @@ describe("AuthService.loginPsychologist", () => {
       id: "u1",
       email: "x@y.z",
       passwordHash: await bcrypt.hash("correct-password", 4),
+      // Não verificado: a senha errada precisa ser recusada antes, sem
+      // revelar que a conta existe
+      emailVerifiedAt: null,
       tokenVersion: 0,
       name: "x",
     });
     await expect(
       AuthService.loginPsychologist({ email: "x@y.z", password: "wrong" }),
     ).rejects.toMatchObject({ message: "Invalid credentials", status: 401 });
+  });
+
+  it("recusa conta com e-mail não verificado, mesmo com a senha certa", async () => {
+    const bcrypt = (await import("bcryptjs")).default;
+    prismaMock.psychologist.findUnique.mockResolvedValue({
+      id: "u1",
+      email: "x@y.z",
+      passwordHash: await bcrypt.hash("correct-password", 4),
+      emailVerifiedAt: null,
+      tokenVersion: 0,
+      name: "x",
+    });
+    await expect(
+      AuthService.loginPsychologist({
+        email: "x@y.z",
+        password: "correct-password",
+      }),
+    ).rejects.toMatchObject({
+      message: "Email not verified",
+      status: 403,
+      code: "EMAIL_NOT_VERIFIED",
+    });
   });
 });

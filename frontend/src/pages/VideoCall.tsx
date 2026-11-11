@@ -117,6 +117,23 @@ function participantLabel(p: RemoteParticipant): string {
   return p.role === "host" ? "Psicólogo" : p.name;
 }
 
+// Id usado para a própria mão na fila (os demais usam o peerId)
+const SELF_HAND_ID = "self";
+
+// Fila de mãos levantadas, de quem levantou primeiro ao último, pelo
+// carimbo do servidor. Retorna a posição (1, 2, ...) de cada id.
+function handQueue(
+  participants: RemoteParticipant[],
+  selfRaisedAt: number | null,
+): Map<string, number> {
+  const raised = participants
+    .filter((p) => p.handRaisedAt !== null)
+    .map((p) => ({ id: p.peerId, at: p.handRaisedAt as number }));
+  if (selfRaisedAt !== null) raised.push({ id: SELF_HAND_ID, at: selfRaisedAt });
+  raised.sort((a, b) => a.at - b.at);
+  return new Map(raised.map((h, index) => [h.id, index + 1]));
+}
+
 // Só mostra o vídeo quando ele está de fato chegando; caso contrário um
 // avatar com o motivo substitui o quadro congelado
 function participantStatus(p: RemoteParticipant): string | undefined {
@@ -179,6 +196,8 @@ const VideoCallInner: React.FC<VideoCallInnerProps> = ({
     admissionStatus,
     isMicMuted,
     isCameraOff,
+    isHandRaised,
+    handRaisedAt,
     connectionState,
     socket,
     toggleMic,
@@ -186,6 +205,8 @@ const VideoCallInner: React.FC<VideoCallInnerProps> = ({
     admitGuest,
     denyGuest,
     muteParticipant,
+    toggleHand,
+    lowerHand,
     endCall,
   } = useWebRTC({
     sessionId,
@@ -291,6 +312,15 @@ const VideoCallInner: React.FC<VideoCallInnerProps> = ({
     failed: "Falha na conexão",
   }[connectionState];
 
+  // A ordem só aparece (de forma discreta) quando há mais de uma mão
+  const hands = handQueue(participants, handRaisedAt);
+  const handOrder = (id: string): number | undefined =>
+    hands.size > 1 ? hands.get(id) : undefined;
+  const raisedNames = participants
+    .filter((p) => hands.has(p.peerId))
+    .sort((a, b) => hands.get(a.peerId)! - hands.get(b.peerId)!)
+    .map(participantLabel);
+
   const localLabel =
     role === "host" ? "Você (Psicólogo)" : `Você (${patientName ?? "Paciente"})`;
 
@@ -353,7 +383,26 @@ const VideoCallInner: React.FC<VideoCallInnerProps> = ({
         <span className="px-3 py-1 rounded-full text-xs font-medium text-white bg-gray-700">
           {participants.length + 1} na chamada
         </span>
+        {hands.size > 0 && (
+          <span
+            className="px-3 py-1 rounded-full text-xs font-medium text-white bg-gray-700"
+            title="Mãos levantadas"
+          >
+            <span aria-hidden="true">✋ </span>
+            {hands.size}
+            <span className="sr-only">
+              {hands.size === 1 ? " mão levantada" : " mãos levantadas"}
+            </span>
+          </span>
+        )}
       </div>
+
+      {/* Leitores de tela: quem está com a mão levantada, em ordem */}
+      <p className="sr-only" role="status" aria-live="polite">
+        {raisedNames.length > 0
+          ? `Mão levantada: ${raisedNames.join(", ")}`
+          : ""}
+      </p>
 
       {errorMessage && (
         <div
@@ -455,6 +504,11 @@ const VideoCallInner: React.FC<VideoCallInnerProps> = ({
                 onMuteMic={
                   role === "host" ? () => muteParticipant(p.peerId) : undefined
                 }
+                isHandRaised={p.handRaisedAt !== null}
+                handOrder={handOrder(p.peerId)}
+                onLowerHand={
+                  role === "host" ? () => lowerHand(p.peerId) : undefined
+                }
                 videoRef={p.peerId === pipTarget?.peerId ? setPipVideo : undefined}
               />
             ))}
@@ -475,6 +529,8 @@ const VideoCallInner: React.FC<VideoCallInnerProps> = ({
             label={localLabel}
             isMuted={true}
             isMicMuted={isMicMuted}
+            isHandRaised={isHandRaised}
+            handOrder={handOrder(SELF_HAND_ID)}
           />
         </div>
       </div>
@@ -503,6 +559,19 @@ const VideoCallInner: React.FC<VideoCallInnerProps> = ({
         >
           {isCameraOff ? "📷 Câmera" : "📹 Câmera"}
         </ControlButton>
+
+        {/* Levantar a mão: pedir a palavra durante a sessão em grupo */}
+        {role === "guest" && (
+          <ControlButton
+            onClick={toggleHand}
+            variant={isHandRaised ? "primary" : "secondary"}
+            ariaPressed={isHandRaised}
+            ariaLabel={isHandRaised ? "Abaixar a mão" : "Levantar a mão"}
+            title={isHandRaised ? "Abaixar a mão" : "Levantar a mão"}
+          >
+            <span aria-hidden="true">✋</span>
+          </ControlButton>
+        )}
 
         {pipSupported && (
           <ControlButton

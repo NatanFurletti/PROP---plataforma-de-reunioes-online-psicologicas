@@ -29,3 +29,16 @@ services:
         value: "2"
       - key: MAX_ROOM_PARTICIPANTS
         value: "6"
+      # E-mail transacional (verificação de conta, redefinição de senha).
+      # "brevo" exige BREVO_API_KEY e EMAIL_FROM (remetente verificado no Brevo).
+      # "resend" exige RESEND_API_KEY e EMAIL_FROM (domínio verificado no Resend).
+      # SMTP não serve: o plano grátis do Render bloqueia as portas 25/465/587.
+      - key: EMAIL_DRIVER
+        sync: false
+      - key: BREVO_API_KEY
+        sync: false
+      - key: RESEND_API_KEY
+        sync: false
+      # Ex.: Palas <nao-responda@seudominio.com.br>
+      - key: EMAIL_FROM
+        sync: false
