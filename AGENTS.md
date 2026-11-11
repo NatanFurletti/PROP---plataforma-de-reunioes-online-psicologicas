@@ -98,7 +98,7 @@ palas/
 
 ### Módulo de Autenticação
 - Cadastro e login exclusivo para psicólogos
-- Verificação de e-mail obrigatória
+- Verificação de e-mail obrigatória: login sem e-mail confirmado responde `403` com `code: "EMAIL_NOT_VERIFIED"` (conferido depois da senha); o frontend oferece reenviar o link
 - Recuperação de senha via e-mail
 
 ### Módulo de Gestão do Psicólogo (Dashboard)
@@ -348,6 +348,7 @@ enum SessionStatus {
 | `GET`  | `/auth/me` | Retorna o psicólogo autenticado | ✅ |
 | `POST` | `/auth/logout` | Logout (incrementa tokenVersion) | ✅ |
 | `GET` | `/auth/verify-email/:token` | Confirma e-mail via link | ❌ |
+| `POST` | `/auth/resend-verification` | Reenvia o link de confirmação de e-mail | ❌ |
 | `POST` | `/auth/forgot-password` | Solicita link de redefinição | ❌ |
 | `POST` | `/auth/reset-password` | Redefine a senha com o token | ❌ |
 | `GET` | `/sessions` | Listar sessões do psicólogo | ✅ |
@@ -361,14 +362,15 @@ enum SessionStatus {
 **Tokens de e-mail (`VerificationToken`):** apenas o hash SHA-256 é
 persistido — o valor em claro só existe no link enviado. Uso único
 (`usedAt`), com expiração de 24h para verificação e 1h para redefinição
-de senha. `forgot-password` responde igual exista ou não a conta, para não
-virar um oráculo de e-mails cadastrados. Redefinir a senha incrementa
+de senha. `forgot-password` e `resend-verification` respondem igual exista
+ou não a conta, para não virar um oráculo de e-mails cadastrados; o reenvio
+invalida os links de verificação anteriores. Redefinir a senha incrementa
 `tokenVersion`, revogando as sessões ativas.
 
-> Envio de e-mail passa por `EmailService` (`services/email.ts`). Em
-> desenvolvimento o driver padrão apenas registra o link no log; para
-> produção, implementar `EmailDriver` com SMTP/Resend/SES e injetar via
-> `setEmailDriver`.
+> Envio de e-mail passa por `EmailService` (`services/email.ts`), com o
+> driver escolhido por `EMAIL_DRIVER`: `console` (padrão, só registra o link
+> no log) ou `resend` (API HTTP do Resend, exige `RESEND_API_KEY` e
+> `EMAIL_FROM`). Nos testes, `setEmailDriver(new InMemoryEmailDriver())`.
 
 ---
 
@@ -437,6 +439,11 @@ JWT_EXPIRES_IN=8h
 PORT=3333
 CLIENT_URL=http://localhost:5173
 MAX_ROOM_PARTICIPANTS=6   # psicólogo incluso
+
+# E-mail (console | resend)
+EMAIL_DRIVER=console
+RESEND_API_KEY=re_xxxxxxxx
+EMAIL_FROM=Palas <nao-responda@seudominio.com.br>
 
 # WebRTC / TURN
 TURN_URL=turn:seu-servidor-turn:3478
