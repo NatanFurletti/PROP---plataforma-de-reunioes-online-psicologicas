@@ -10,6 +10,13 @@ function required(name: string): string {
   return value;
 }
 
+// Envio de e-mail. "console" só registra o link no log (desenvolvimento);
+// "resend" envia de verdade pela API do Resend e exige chave e remetente.
+const EMAIL_DRIVER = (process.env.EMAIL_DRIVER?.trim() || "console").toLowerCase();
+if (EMAIL_DRIVER !== "console" && EMAIL_DRIVER !== "resend") {
+  throw new Error(`Invalid EMAIL_DRIVER: ${EMAIL_DRIVER} (use "console" or "resend")`);
+}
+
 export const env = {
   NODE_ENV: process.env.NODE_ENV ?? "development",
   PORT: Number(process.env.PORT ?? 3333),
@@ -31,4 +38,9 @@ export const env = {
     100,
     Number(process.env.RECONNECT_GRACE_MS ?? 120_000) || 120_000,
   ),
+  EMAIL_DRIVER: EMAIL_DRIVER as "console" | "resend",
+  RESEND_API_KEY: EMAIL_DRIVER === "resend" ? required("RESEND_API_KEY") : "",
+  // Ex.: "Palas <nao-responda@seudominio.com.br>" — o domínio precisa estar
+  // verificado no Resend.
+  EMAIL_FROM: EMAIL_DRIVER === "resend" ? required("EMAIL_FROM") : "",
 };

@@ -33,7 +33,58 @@ export class InMemoryEmailDriver implements EmailDriver {
   }
 }
 
-let driver: EmailDriver = new ConsoleEmailDriver();
+// Envia pela API HTTP do Resend (https://resend.com/docs/api-reference/emails/send-email).
+// Usa o fetch nativo do Node — sem dependência extra.
+export class ResendEmailDriver implements EmailDriver {
+  constructor(
+    private readonly apiKey: string,
+    private readonly from: string,
+    private readonly fetchImpl: typeof fetch = fetch,
+    private readonly timeoutMs = 10_000,
+  ) {}
+
+  async send(message: EmailMessage): Promise<void> {
+    const response = await this.fetchImpl("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${this.apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        from: this.from,
+        to: [message.to],
+        subject: message.subject,
+        text: message.text,
+      }),
+      signal: AbortSignal.timeout(this.timeoutMs),
+    });
+
+    if (!response.ok) {
+      // O corpo traz só o motivo (ex.: domínio não verificado), sem o
+      // conteúdo do e-mail. O destinatário não vai para a mensagem de erro.
+      const detail = await response.text().catch(() => "");
+      throw new Error(
+        `Resend respondeu ${response.status}: ${detail.slice(0, 300)}`,
+      );
+    }
+  }
+}
+
+function createDefaultDriver(): EmailDriver {
+  if (env.EMAIL_DRIVER === "resend") {
+    return new ResendEmailDriver(env.RESEND_API_KEY, env.EMAIL_FROM);
+  }
+  if (env.NODE_ENV === "production") {
+    // Em produção o driver de console deixa o psicólogo sem o link de
+    // verificação/redefinição — e escreve tokens válidos no log.
+    logger.warn(
+      "[email] EMAIL_DRIVER=console em produção: nenhum e-mail será enviado",
+    );
+  }
+  return new ConsoleEmailDriver();
+}
+
+let driver: EmailDriver = createDefaultDriver();
 
 export function setEmailDriver(next: EmailDriver): void {
   driver = next;
