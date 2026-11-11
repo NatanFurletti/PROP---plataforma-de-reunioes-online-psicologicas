@@ -38,6 +38,63 @@ beforeEach(() => {
   prismaMock.psychologist.update.mockResolvedValue({ id: "p1" });
 });
 
+describe("reenvio do link de verificação", () => {
+  it("envia um novo link e invalida os anteriores para conta não verificada", async () => {
+    prismaMock.psychologist.findUnique.mockResolvedValue({
+      id: "p1",
+      email: "ana@test.com",
+      emailVerifiedAt: null,
+    });
+
+    const result = await AuthService.resendVerificationEmail("ana@test.com");
+
+    expect(prismaMock.verificationToken.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          psychologistId: "p1",
+          type: "EMAIL_VERIFICATION",
+        }),
+      }),
+    );
+    expect(mailbox.sent).toHaveLength(1);
+    expect(mailbox.sent[0].to).toBe("ana@test.com");
+    expect(mailbox.sent[0].text).toMatch(/verify-email\/[0-9a-f]{64}/);
+    expect(result.message).toBeDefined();
+  });
+
+  it("não envia nada para conta já verificada, com a mesma resposta", async () => {
+    prismaMock.psychologist.findUnique.mockResolvedValue({
+      id: "p1",
+      email: "ana@test.com",
+      emailVerifiedAt: new Date(),
+    });
+    const verified = await AuthService.resendVerificationEmail("ana@test.com");
+
+    prismaMock.psychologist.findUnique.mockResolvedValue(null);
+    const unknown = await AuthService.resendVerificationEmail("ninguem@test.com");
+
+    expect(mailbox.sent).toHaveLength(0);
+    expect(verified).toEqual(unknown);
+  });
+
+  it("não expõe falha de envio ao cliente", async () => {
+    prismaMock.psychologist.findUnique.mockResolvedValue({
+      id: "p1",
+      email: "ana@test.com",
+      emailVerifiedAt: null,
+    });
+    setEmailDriver({
+      send: async () => {
+        throw new Error("SMTP down");
+      },
+    });
+
+    await expect(
+      AuthService.resendVerificationEmail("ana@test.com"),
+    ).resolves.toBeDefined();
+  });
+});
+
 describe("registro → verificação de e-mail", () => {
   it("envia e-mail de verificação ao registrar", async () => {
     prismaMock.psychologist.findUnique.mockResolvedValue(null);

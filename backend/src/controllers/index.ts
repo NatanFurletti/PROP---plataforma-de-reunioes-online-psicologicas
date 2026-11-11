@@ -8,6 +8,7 @@ import {
   updateSessionStatusSchema,
   rescheduleSessionSchema,
   forgotPasswordSchema,
+  resendVerificationSchema,
   resetPasswordSchema,
 } from "../services/index.js";
 import { AppError } from "../utils/AppError.js";
@@ -191,6 +192,20 @@ export const verifyEmail = async (
   try {
     const { token } = req.params;
     const result = await AuthService.verifyEmail(token);
+    res.json(result);
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const resendVerification = async (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    const { email } = resendVerificationSchema.parse(req.body);
+    const result = await AuthService.resendVerificationEmail(email);
     res.json(result);
   } catch (error) {
     next(error);

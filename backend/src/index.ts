@@ -15,6 +15,7 @@ import { MAX_SOCKET_PAYLOAD_BYTES } from "./socket/chat.js";
 import { prisma } from "./prismaClient.js";
 import { env } from "./config/env.js";
 import { logger } from "./config/logger.js";
+import { AppError } from "./utils/AppError.js";
 
 const app = express();
 const httpServer = createServer(app);
@@ -92,6 +93,7 @@ app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
     500;
   const message =
     (err as { message?: string })?.message ?? "Internal Server Error";
+  const code = err instanceof AppError ? err.code : undefined;
 
   // Logar erro estruturado — req.log inclui requestId/método/url quando pino-http está ativo
   (req.log ?? logger).error(
@@ -101,6 +103,7 @@ app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
 
   res.status(status).json({
     error: message,
+    ...(code ? { code } : {}),
     timestamp: new Date().toISOString(),
   });
 });
