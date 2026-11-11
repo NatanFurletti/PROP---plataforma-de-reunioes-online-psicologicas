@@ -9,6 +9,13 @@ interface VideoTileProps {
   isMicMuted?: boolean;
   // Host: botão para desligar o microfone deste participante
   onMuteMic?: () => void;
+  // Participante com a mão levantada: mostra a mão no canto do vídeo
+  isHandRaised?: boolean;
+  // Posição na fila de mãos (1 = levantou primeiro). Só é passada quando
+  // há mais de uma mão levantada.
+  handOrder?: number;
+  // Host: botão para abaixar a mão deste participante
+  onLowerHand?: () => void;
   // false: cobre o vídeo com um avatar (ex.: par caiu e o quadro congelou).
   // O <video> continua montado por baixo, então o áudio segue tocando.
   showVideo?: boolean;
@@ -24,6 +31,9 @@ export const VideoTile: React.FC<VideoTileProps> = ({
   isMuted = false,
   isMicMuted = false,
   onMuteMic,
+  isHandRaised = false,
+  handOrder,
+  onLowerHand,
   showVideo = true,
   status,
   videoRef,
@@ -89,21 +99,60 @@ export const VideoTile: React.FC<VideoTileProps> = ({
           <span className="truncate">{label}</span>
         </div>
       </div>
-      {onMuteMic && !isMicMuted && (
-        <button
-          type="button"
-          onClick={onMuteMic}
-          aria-label={`Desligar o microfone de ${label}`}
-          title="Desligar microfone"
-          className="absolute top-2 right-2 flex items-center gap-1 px-2 py-1 rounded bg-black bg-opacity-60 hover:bg-red-600 focus:bg-red-600 text-white text-xs transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-white"
+      {isHandRaised && (
+        <div
+          role="img"
+          aria-label={
+            handOrder
+              ? `${label} levantou a mão (${handOrder}º da fila)`
+              : `${label} levantou a mão`
+          }
+          title={handOrder ? `Mão levantada · ${handOrder}º` : "Mão levantada"}
+          data-testid="hand-raised-icon"
+          className="absolute top-2 left-2 flex items-center gap-1 px-1.5 py-0.5 rounded bg-black bg-opacity-60 text-sm leading-none"
         >
-          <MicOffIcon />
-          Mutar
-        </button>
+          <span aria-hidden="true">✋</span>
+          {handOrder !== undefined && (
+            <span aria-hidden="true" className="text-[10px] font-medium text-gray-300">
+              {handOrder}º
+            </span>
+          )}
+        </div>
+      )}
+      {((onMuteMic && !isMicMuted) || (onLowerHand && isHandRaised)) && (
+        <div className="absolute top-2 right-2 flex flex-col items-end gap-1">
+          {onMuteMic && !isMicMuted && (
+            <button
+              type="button"
+              onClick={onMuteMic}
+              aria-label={`Desligar o microfone de ${label}`}
+              title="Desligar microfone"
+              className={`${TILE_ACTION_CLASS} hover:bg-red-600 focus:bg-red-600`}
+            >
+              <MicOffIcon />
+              Mutar
+            </button>
+          )}
+          {onLowerHand && isHandRaised && (
+            <button
+              type="button"
+              onClick={onLowerHand}
+              aria-label={`Abaixar a mão de ${label}`}
+              title="Abaixar a mão"
+              className={`${TILE_ACTION_CLASS} hover:bg-gray-600 focus:bg-gray-600`}
+            >
+              <span aria-hidden="true">✋</span>
+              Abaixar
+            </button>
+          )}
+        </div>
       )}
     </div>
   );
 };
+
+const TILE_ACTION_CLASS =
+  "flex items-center gap-1 px-2 py-1 rounded bg-black bg-opacity-60 text-white text-xs transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-white";
 
 // Microfone cortado (ícone em linha, herda a cor do texto)
 const MicOffIcon: React.FC = () => (

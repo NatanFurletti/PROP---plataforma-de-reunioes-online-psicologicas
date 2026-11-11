@@ -41,4 +41,29 @@ describe("VideoTile", () => {
     render(<VideoTile stream={null} label="Maria" />);
     expect(screen.queryByRole("button")).toBeNull();
   });
+
+  it("mostra a mão levantada e a ordem só quando informada", () => {
+    const { rerender } = render(<VideoTile stream={null} label="Maria" />);
+    expect(screen.queryByTestId("hand-raised-icon")).toBeNull();
+
+    rerender(<VideoTile stream={null} label="Maria" isHandRaised />);
+    expect(screen.getByRole("img", { name: "Maria levantou a mão" })).toBeTruthy();
+    expect(screen.queryByText("1º")).toBeNull();
+
+    rerender(<VideoTile stream={null} label="Maria" isHandRaised handOrder={2} />);
+    expect(screen.getByRole("img", { name: "Maria levantou a mão (2º da fila)" })).toBeTruthy();
+    expect(screen.getByText("2º")).toBeTruthy();
+  });
+
+  it("botão de abaixar a mão aparece só com a mão levantada", () => {
+    const onLowerHand = vi.fn();
+    const { rerender } = render(
+      <VideoTile stream={null} label="Maria" onLowerHand={onLowerHand} />,
+    );
+    expect(screen.queryByRole("button", { name: /Abaixar a mão/ })).toBeNull();
+
+    rerender(<VideoTile stream={null} label="Maria" onLowerHand={onLowerHand} isHandRaised />);
+    fireEvent.click(screen.getByRole("button", { name: "Abaixar a mão de Maria" }));
+    expect(onLowerHand).toHaveBeenCalledTimes(1);
+  });
 });
