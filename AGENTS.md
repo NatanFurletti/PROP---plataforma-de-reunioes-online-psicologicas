@@ -369,8 +369,11 @@ invalida os links de verificação anteriores. Redefinir a senha incrementa
 
 > Envio de e-mail passa por `EmailService` (`services/email.ts`), com o
 > driver escolhido por `EMAIL_DRIVER`: `console` (padrão, só registra o link
-> no log) ou `resend` (API HTTP do Resend, exige `RESEND_API_KEY` e
-> `EMAIL_FROM`). Nos testes, `setEmailDriver(new InMemoryEmailDriver())`.
+> no log), `resend` (API HTTP do Resend, exige `RESEND_API_KEY`, `EMAIL_FROM`
+> e domínio próprio) ou `brevo` (API HTTP do Brevo, exige `BREVO_API_KEY` e
+> `EMAIL_FROM`; aceita remetente `@gmail.com` verificado). Sempre por HTTPS:
+> o plano grátis do Render bloqueia SMTP. Nos testes,
+> `setEmailDriver(new InMemoryEmailDriver())`.
 
 ---
 
@@ -440,9 +443,10 @@ PORT=3333
 CLIENT_URL=http://localhost:5173
 MAX_ROOM_PARTICIPANTS=6   # psicólogo incluso
 
-# E-mail (console | resend)
+# E-mail (console | resend | brevo)
 EMAIL_DRIVER=console
 RESEND_API_KEY=re_xxxxxxxx
+BREVO_API_KEY=xkeysib-xxxxxxxx
 EMAIL_FROM=Palas <nao-responda@seudominio.com.br>
 
 # WebRTC / TURN
