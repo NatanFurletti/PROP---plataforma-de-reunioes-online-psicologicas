@@ -85,7 +85,7 @@ palas/
 - **Controles de sessão:** mutar microfone, ativar/desativar câmera, encerrar chamada
 - **Mutar participantes:** o psicólogo desliga o microfone de qualquer participante; só a própria pessoa religa
 - **Ícone de mudo:** quem está com o microfone desligado aparece com o ícone vermelho para todos
-- **Levantar a mão:** o paciente pede a palavra pelo botão "Mão"; todos veem a mão no vídeo dele. Com mais de uma mão levantada, um número discreto (1º, 2º...) mostra quem levantou primeiro. O psicólogo pode abaixar a mão de alguém
+- **Levantar a mão:** o paciente pede a palavra pelo botão ✋ (só ícone, legenda ao passar o mouse); todos veem a mão no vídeo dele. Com mais de uma mão levantada, um número discreto (1º, 2º...) mostra quem levantou primeiro. O psicólogo pode abaixar a mão de alguém
 - **Indicadores visuais:** status de conexão, nível de áudio, câmera ativa
 - **Sala de espera com aprovação:** o paciente informa o nome e aguarda; o psicólogo vê o pedido e admite ou recusa cada entrada
 - **Vários participantes:** até `MAX_ROOM_PARTICIPANTS` pessoas por sala (padrão 6, psicólogo incluso)

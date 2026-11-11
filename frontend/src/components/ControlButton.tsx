@@ -8,6 +8,8 @@ interface ControlButtonProps {
   ariaLabel?: string;
   // Botões de alternância (ex.: janela flutuante ligada/desligada)
   ariaPressed?: boolean;
+  // Legenda ao passar o mouse (ex.: botão só com ícone)
+  title?: string;
   children: React.ReactNode;
 }
 
@@ -18,6 +20,7 @@ export const ControlButton: React.FC<ControlButtonProps> = ({
   icon,
   ariaLabel,
   ariaPressed,
+  title,
   children,
 }) => {
   const variantClasses = {
@@ -32,6 +35,7 @@ export const ControlButton: React.FC<ControlButtonProps> = ({
       disabled={disabled}
       aria-label={ariaLabel}
       aria-pressed={ariaPressed}
+      title={title}
       className={`
         relative p-3 rounded-full flex items-center justify-center gap-2
         text-white font-semibold transition-all

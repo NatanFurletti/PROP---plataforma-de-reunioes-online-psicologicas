@@ -567,8 +567,9 @@ const VideoCallInner: React.FC<VideoCallInnerProps> = ({
             variant={isHandRaised ? "primary" : "secondary"}
             ariaPressed={isHandRaised}
             ariaLabel={isHandRaised ? "Abaixar a mão" : "Levantar a mão"}
+            title={isHandRaised ? "Abaixar a mão" : "Levantar a mão"}
           >
-            ✋ Mão
+            <span aria-hidden="true">✋</span>
           </ControlButton>
         )}
 
