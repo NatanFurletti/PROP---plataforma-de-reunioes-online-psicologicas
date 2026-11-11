@@ -2,7 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 
 process.env.JWT_SECRET = "test-secret-do-not-use-in-prod";
 
-const { ResendEmailDriver, BrevoEmailDriver, parseSender } = await import("./email");
+const { ResendEmailDriver, BrevoEmailDriver, parseSender, renderActionEmail } =
+  await import("./email");
 
 const message = {
   to: "ana@test.com",
@@ -111,5 +112,56 @@ describe("BrevoEmailDriver", () => {
     );
 
     await expect(driver.send(message)).rejects.toThrow(/400.*sender not valid/);
+  });
+});
+
+describe("renderActionEmail", () => {
+  it("gera botão e link clicáveis, escapando o conteúdo", () => {
+    const html = renderActionEmail({
+      intro: "Confirme <já>",
+      buttonLabel: "Confirmar e-mail",
+      link: "https://palas.test/verify-email/abc?x=1&y=2",
+      footer: "Expira em 24 horas.",
+    });
+
+    expect(html).toContain(
+      '<a href="https://palas.test/verify-email/abc?x=1&amp;y=2"',
+    );
+    expect(html).toContain(">Confirmar e-mail</a>");
+    expect(html).toContain("Confirme &lt;já&gt;");
+  });
+});
+
+describe("envio com HTML", () => {
+  it("Brevo e Resend mandam a versão HTML junto do texto", async () => {
+    const withHtml = { ...message, html: "<p>oi</p>" };
+    const brevoFetch = vi
+      .fn()
+      .mockResolvedValue(new Response("{}", { status: 201 }));
+    const resendFetch = vi
+      .fn()
+      .mockResolvedValue(new Response("{}", { status: 200 }));
+
+    await new BrevoEmailDriver(
+      "k",
+      "a@b.com",
+      brevoFetch as unknown as typeof fetch,
+    ).send(withHtml);
+    await new ResendEmailDriver(
+      "k",
+      "a@b.com",
+      resendFetch as unknown as typeof fetch,
+    ).send(withHtml);
+
+    const brevoBody = JSON.parse(
+      (brevoFetch.mock.calls[0] as [string, RequestInit])[1].body as string,
+    );
+    const resendBody = JSON.parse(
+      (resendFetch.mock.calls[0] as [string, RequestInit])[1].body as string,
+    );
+    expect(brevoBody.htmlContent).toBe("<p>oi</p>");
+    expect(brevoBody.textContent).toBe(message.text);
+    expect(resendBody.html).toBe("<p>oi</p>");
+    expect(resendBody.text).toBe(message.text);
   });
 });

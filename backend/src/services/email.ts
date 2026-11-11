@@ -5,6 +5,9 @@ export interface EmailMessage {
   to: string;
   subject: string;
   text: string;
+  // Versão HTML (opcional). O texto puro continua indo junto para clientes
+  // que não exibem HTML.
+  html?: string;
 }
 
 // Driver de envio. Trocar a implementação (Resend, Brevo, SES) não deve
@@ -55,6 +58,7 @@ export class ResendEmailDriver implements EmailDriver {
         to: [message.to],
         subject: message.subject,
         text: message.text,
+        ...(message.html ? { html: message.html } : {}),
       }),
       signal: AbortSignal.timeout(this.timeoutMs),
     });
@@ -109,6 +113,7 @@ export class BrevoEmailDriver implements EmailDriver {
         to: [{ email: message.to }],
         subject: message.subject,
         textContent: message.text,
+        ...(message.html ? { htmlContent: message.html } : {}),
       }),
       signal: AbortSignal.timeout(this.timeoutMs),
     });
@@ -146,6 +151,42 @@ export function setEmailDriver(next: EmailDriver): void {
   driver = next;
 }
 
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+// E-mail simples com um botão para o link. Estilos inline porque os
+// clientes de e-mail ignoram <style>. O link também aparece por extenso,
+// para quem não consegue clicar no botão.
+export function renderActionEmail(params: {
+  intro: string;
+  buttonLabel: string;
+  link: string;
+  footer: string;
+}): string {
+  const link = escapeHtml(params.link);
+  return `<!doctype html>
+<html lang="pt-BR">
+<body style="margin:0;padding:24px;background:#f4f4f5;font-family:Arial,Helvetica,sans-serif;color:#18181b;">
+  <div style="max-width:480px;margin:0 auto;background:#ffffff;border-radius:8px;padding:32px;">
+    <h1 style="margin:0 0 16px;font-size:20px;">Palas</h1>
+    <p style="margin:0 0 24px;font-size:15px;line-height:1.5;">${escapeHtml(params.intro)}</p>
+    <p style="margin:0 0 24px;">
+      <a href="${link}" style="display:inline-block;background:#4f46e5;color:#ffffff;text-decoration:none;font-weight:bold;padding:12px 24px;border-radius:6px;">${escapeHtml(params.buttonLabel)}</a>
+    </p>
+    <p style="margin:0 0 8px;font-size:13px;color:#52525b;">Se o botão não funcionar, copie e cole este endereço no navegador:</p>
+    <p style="margin:0 0 24px;font-size:13px;word-break:break-all;"><a href="${link}" style="color:#4f46e5;">${link}</a></p>
+    <p style="margin:0;font-size:13px;color:#52525b;">${escapeHtml(params.footer)}</p>
+  </div>
+</body>
+</html>`;
+}
+
 export class EmailService {
   static async sendVerificationEmail(
     to: string,
@@ -156,6 +197,12 @@ export class EmailService {
       to,
       subject: "Confirme seu e-mail — Palas",
       text: `Para confirmar seu e-mail, acesse: ${link}\n\nO link expira em 24 horas.`,
+      html: renderActionEmail({
+        intro: "Para confirmar seu e-mail, clique no botão abaixo.",
+        buttonLabel: "Confirmar e-mail",
+        link,
+        footer: "O link expira em 24 horas.",
+      }),
     });
   }
 
@@ -168,6 +215,13 @@ export class EmailService {
       to,
       subject: "Redefinição de senha — Palas",
       text: `Para redefinir sua senha, acesse: ${link}\n\nO link expira em 1 hora. Se você não solicitou, ignore esta mensagem.`,
+      html: renderActionEmail({
+        intro: "Para redefinir sua senha, clique no botão abaixo.",
+        buttonLabel: "Redefinir senha",
+        link,
+        footer:
+          "O link expira em 1 hora. Se você não solicitou, ignore esta mensagem.",
+      }),
     });
   }
 }
