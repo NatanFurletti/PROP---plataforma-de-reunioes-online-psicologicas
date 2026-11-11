@@ -7,7 +7,7 @@ export interface EmailMessage {
   text: string;
 }
 
-// Driver de envio. Trocar a implementação (SMTP, Resend, SES) não deve
+// Driver de envio. Trocar a implementação (Resend, Brevo, SES) não deve
 // exigir mudança em quem envia e-mail.
 export interface EmailDriver {
   send(message: EmailMessage): Promise<void>;
@@ -70,9 +70,65 @@ export class ResendEmailDriver implements EmailDriver {
   }
 }
 
+// Separa "Nome <email@x.com>" em nome e endereço. Aceita também só o endereço.
+export function parseSender(from: string): { name?: string; email: string } {
+  const match = from.trim().match(/^(.*?)\s*<([^<>\s]+@[^<>\s]+)>$/);
+  if (match) {
+    const name = match[1].trim().replace(/^"(.*)"$/, "$1");
+    return name ? { name, email: match[2] } : { email: match[2] };
+  }
+  return { email: from.trim() };
+}
+
+// Envia pela API HTTP do Brevo (https://developers.brevo.com/reference/sendtransacemail).
+// Diferente do Resend, o Brevo aceita um remetente verificado só pelo
+// endereço (ex.: um @gmail.com), sem domínio próprio. Usa HTTPS porque o
+// plano grátis do Render bloqueia as portas de SMTP.
+export class BrevoEmailDriver implements EmailDriver {
+  private readonly sender: { name?: string; email: string };
+
+  constructor(
+    private readonly apiKey: string,
+    from: string,
+    private readonly fetchImpl: typeof fetch = fetch,
+    private readonly timeoutMs = 10_000,
+  ) {
+    this.sender = parseSender(from);
+  }
+
+  async send(message: EmailMessage): Promise<void> {
+    const response = await this.fetchImpl("https://api.brevo.com/v3/smtp/email", {
+      method: "POST",
+      headers: {
+        "api-key": this.apiKey,
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify({
+        sender: this.sender,
+        to: [{ email: message.to }],
+        subject: message.subject,
+        textContent: message.text,
+      }),
+      signal: AbortSignal.timeout(this.timeoutMs),
+    });
+
+    if (!response.ok) {
+      // O corpo traz só o motivo (ex.: remetente não verificado).
+      const detail = await response.text().catch(() => "");
+      throw new Error(
+        `Brevo respondeu ${response.status}: ${detail.slice(0, 300)}`,
+      );
+    }
+  }
+}
+
 function createDefaultDriver(): EmailDriver {
   if (env.EMAIL_DRIVER === "resend") {
     return new ResendEmailDriver(env.RESEND_API_KEY, env.EMAIL_FROM);
+  }
+  if (env.EMAIL_DRIVER === "brevo") {
+    return new BrevoEmailDriver(env.BREVO_API_KEY, env.EMAIL_FROM);
   }
   if (env.NODE_ENV === "production") {
     // Em produção o driver de console deixa o psicólogo sem o link de
