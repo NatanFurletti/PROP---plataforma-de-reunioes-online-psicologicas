@@ -34,9 +34,10 @@ vi.mock("react-router-dom", async () => {
 
 const { Dashboard } = await import("./Dashboard");
 
+// Data relativa a agora: uma data fixa acabaria expirando e escondendo o link
 const SESSION = {
   id: "sess-1",
-  scheduledAt: "2026-09-01T14:00:00.000Z",
+  scheduledAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
   durationMinutes: 50,
   status: "SCHEDULED" as const,
   accessToken: "token-abc",
@@ -107,6 +108,29 @@ describe("Dashboard — copiar link", () => {
 
     expect(await screen.findByText("Copiado!")).toBeInTheDocument();
     vi.unstubAllGlobals();
+  });
+
+  it.each(["COMPLETED", "CANCELLED"] as const)(
+    "não oferece o link para sessão %s",
+    async (status) => {
+      listSessions.mockResolvedValue({ data: [{ ...SESSION, status }] });
+      renderDashboard();
+      await screen.findByText(status === "COMPLETED" ? "Concluída" : "Cancelada");
+      expect(
+        screen.queryByRole("button", { name: /copiar link da sessão/i }),
+      ).not.toBeInTheDocument();
+    },
+  );
+
+  it("não oferece o link para sessão expirada", async () => {
+    // Agendada há 2h com 50 min de duração: passou da janela de 30 min
+    const scheduledAt = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+    listSessions.mockResolvedValue({ data: [{ ...SESSION, scheduledAt }] });
+    renderDashboard();
+    await screen.findByText("Agendada");
+    expect(
+      screen.queryByRole("button", { name: /copiar link da sessão/i }),
+    ).not.toBeInTheDocument();
   });
 });
 

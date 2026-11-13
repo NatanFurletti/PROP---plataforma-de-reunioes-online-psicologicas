@@ -7,7 +7,12 @@ import { useChat } from "../hooks/useChat";
 import { usePictureInPicture } from "../hooks/usePictureInPicture";
 import { useWakeLock } from "../hooks/useWakeLock";
 import { useWebRTC, type RemoteParticipant } from "../hooks/useWebRTC";
-import { healthService } from "../services/api";
+import { healthService, sessionService } from "../services/api";
+import {
+  buildJoinLink,
+  isSessionJoinable,
+  type JoinableSession,
+} from "../utils/sessionLink";
 import {
   clearGuestIdentity,
   loadGuestIdentity,
@@ -268,6 +273,44 @@ const VideoCallInner: React.FC<VideoCallInnerProps> = ({
     }, KEEP_ALIVE_MS);
     return () => clearInterval(timer);
   }, []);
+
+  // Host: dados da sessão para copiar o link de convite sem sair da chamada
+  const [inviteSession, setInviteSession] = useState<
+    (JoinableSession & { accessToken: string }) | null
+  >(null);
+  const [linkCopied, setLinkCopied] = useState(false);
+
+  useEffect(() => {
+    if (role !== "host") return;
+    let cancelled = false;
+    sessionService
+      .getSession(sessionId)
+      .then((res) => {
+        if (!cancelled) setInviteSession(res.data as JoinableSession & { accessToken: string });
+      })
+      .catch(() => {
+        // Sem os dados, o botão de copiar link apenas não aparece
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [role, sessionId]);
+
+  const canCopyLink = inviteSession !== null && isSessionJoinable(inviteSession);
+
+  const handleCopyLink = async () => {
+    if (!inviteSession || !isSessionJoinable(inviteSession)) {
+      setErrorMessage("Esta sessão não aceita mais novos participantes.");
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(buildJoinLink(inviteSession.accessToken));
+      setLinkCopied(true);
+      setTimeout(() => setLinkCopied(false), 2000);
+    } catch {
+      setErrorMessage("Não foi possível copiar o link. Verifique as permissões do navegador.");
+    }
+  };
 
   // Sair da chamada. O destino é definido aqui, sem depender de resposta
   // do servidor — o socket é fechado em seguida e nenhum evento chegaria.
@@ -606,6 +649,16 @@ const VideoCallInner: React.FC<VideoCallInnerProps> = ({
             </span>
           )}
         </ControlButton>
+
+        {role === "host" && canCopyLink && (
+          <ControlButton
+            onClick={handleCopyLink}
+            variant="secondary"
+            ariaLabel={linkCopied ? "Link copiado" : "Copiar link da sessão"}
+          >
+            {linkCopied ? "✅ Copiado!" : "🔗 Copiar link"}
+          </ControlButton>
+        )}
 
         <ControlButton onClick={handleEndClick} variant="danger">
           {role === "host" ? "Encerrar" : "Sair"}

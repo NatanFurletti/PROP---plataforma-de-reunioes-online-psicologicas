@@ -2,12 +2,13 @@ import React, { useEffect, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuthStore } from "../contexts/useSessionStore";
 import { authService, sessionService } from "../services/api";
+import { buildJoinLink, isSessionJoinable, type SessionStatus } from "../utils/sessionLink";
 
 interface Session {
   id: string;
   scheduledAt: string;
   durationMinutes: number;
-  status: "SCHEDULED" | "IN_PROGRESS" | "COMPLETED" | "CANCELLED";
+  status: SessionStatus;
   accessToken: string;
   createdAt: string;
 }
@@ -101,10 +102,10 @@ export const Dashboard: React.FC = () => {
   };
 
   const handleCopyLink = async (session: Session) => {
-    const clientUrl = import.meta.env.VITE_CLIENT_URL || window.location.origin;
-    const link = `${clientUrl}/join/${session.accessToken}`;
+    // A sessão pode ter expirado desde a última renderização
+    if (!isSessionJoinable(session)) return;
     try {
-      await navigator.clipboard.writeText(link);
+      await navigator.clipboard.writeText(buildJoinLink(session.accessToken));
       setCopiedId(session.id);
       setTimeout(() => setCopiedId(null), 2000);
     } catch {
@@ -286,6 +287,7 @@ export const Dashboard: React.FC = () => {
               {sessions.map((session) => {
                 const { date, time } = formatDateTime(session.scheduledAt);
                 const isCopied = copiedId === session.id;
+                const joinable = isSessionJoinable(session);
                 return (
                   <li key={session.id} className="px-6 py-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                     <div className="space-y-1">
@@ -304,16 +306,17 @@ export const Dashboard: React.FC = () => {
                     </div>
 
                     <div className="flex items-center gap-2 flex-shrink-0">
-                      <button
-                        onClick={() => handleCopyLink(session)}
-                        className="text-xs border border-gray-300 hover:border-blue-400 text-gray-700 hover:text-blue-700 px-3 py-1.5 rounded transition-colors"
-                        aria-label={isCopied ? "Link copiado" : "Copiar link da sessão"}
-                      >
-                        {isCopied ? "Copiado!" : "Copiar link"}
-                      </button>
+                      {joinable && (
+                        <button
+                          onClick={() => handleCopyLink(session)}
+                          className="text-xs border border-gray-300 hover:border-blue-400 text-gray-700 hover:text-blue-700 px-3 py-1.5 rounded transition-colors"
+                          aria-label={isCopied ? "Link copiado" : "Copiar link da sessão"}
+                        >
+                          {isCopied ? "Copiado!" : "Copiar link"}
+                        </button>
+                      )}
 
-                      {(session.status === "SCHEDULED" ||
-                        session.status === "IN_PROGRESS") && (
+                      {joinable && (
                         <button
                           onClick={() => handleStart(session)}
                           className="text-xs bg-green-600 hover:bg-green-700 text-white font-semibold px-3 py-1.5 rounded"
